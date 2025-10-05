@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const { PORT, JWT_SECRET } = require('./config');
+const { PORT, JWT_SECRET, BACKEND_IP, BASE_URL } = require('./config');
 const userRoutes = require('./routes/user.routes');
 const usersRoutes = require('./routes/users.routes');
 const jobRoutes = require('./routes/job.routes');
@@ -29,9 +29,10 @@ app.get('/', (req, res) => {
 });
 
 const servicePort = process.env.PORT || PORT || 5000;
-const server = app.listen(servicePort, '0.0.0.0', () => {
-  console.log(`Server running on port ${servicePort}`);
-  console.log(`Access the API at: http://localhost:${servicePort}`);
+const server = app.listen(servicePort, BACKEND_IP, () => {
+  console.log(`Server running on ${BACKEND_IP}:${servicePort}`);
+  console.log(`Access the API at: ${BASE_URL}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });
 
 // Keep the server running
