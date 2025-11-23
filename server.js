@@ -10,6 +10,7 @@ const jobRoutes = require('./routes/job.routes');
 const houseRoutes = require('./routes/houses.routes');
 const uploadRoutes = require('./routes/upload.routes');
 const meterReadingRoutes = require('./routes/meterReading.routes');
+const messageRoutes = require('./routes/messages.routes');
 require('./db'); 
 
 // Set JWT_SECRET in environment variables for jwt.sign
@@ -28,6 +29,7 @@ app.use('/api/jobs', jobRoutes);
 app.use('/api/houses', houseRoutes);
 app.use('/api/upload', uploadRoutes);   // File upload routes
 app.use('/api/meter-readings', meterReadingRoutes); // Meter reading routes
+app.use('/api/messages', messageRoutes);
 
 app.get('/', (req, res) => {
     res.send('MeterMate Backend is running!');
@@ -39,7 +41,7 @@ const server = http.createServer(app);
 // Initialize Socket.IO
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:3000", "http://192.168.8.163:3000"],
+    origin: ["http://localhost:3000", "http://192.168.1.99:3000"],
     methods: ["GET", "POST"],
     credentials: true
   }

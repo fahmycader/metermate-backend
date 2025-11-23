@@ -21,12 +21,12 @@ class ConfigService {
       this.config = {
         development: {
           backend: {
-            ip: '192.168.8.163',
+            ip: '192.168.1.99',
             port: 3001,
-            baseUrl: 'http://192.168.8.163:3001'
+            baseUrl: 'http://192.168.1.99:3001'
           },
           database: {
-            mongodb: 'mongodb://localhost:27017/metermate'
+            mongodb: 'mongodb+srv://mail2fahmy:0eFaerZ68FMAgkO2@cluster0.gkwxq63.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0'
           },
           jwt: {
             secret: 'fce832cd907fc4f134f1cd1b8d34d54096cd27fb4978ccb0c6f2e73fcf90dd2466fdf727f9270d5ee4dadaab4b032e683ec2297d127e0e16bde5757ae4963f3a'
@@ -41,7 +41,7 @@ class ConfigService {
   }
 
   static get backendIp() {
-    return this.config?.[this.environment]?.backend?.ip || '192.168.8.163';
+    return this.config?.[this.environment]?.backend?.ip || '192.168.1.99';
   }
 
   static get backendPort() {
@@ -49,11 +49,11 @@ class ConfigService {
   }
 
   static get baseUrl() {
-    return this.config?.[this.environment]?.backend?.baseUrl || 'http://192.168.8.163:3001';
+    return this.config?.[this.environment]?.backend?.baseUrl || 'http://192.168.1.99:3001';
   }
 
   static get mongoUri() {
-    return this.config?.[this.environment]?.database?.mongodb || 'mongodb://localhost:27017/metermate';
+    return this.config?.[this.environment]?.database?.mongodb || 'mongodb+srv://mail2fahmy:0eFaerZ68FMAgkO2@cluster0.gkwxq63.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
   }
 
   static get jwtSecret() {

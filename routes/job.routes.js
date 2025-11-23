@@ -1,9 +1,164 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
+const XLSX = require('xlsx');
+const axios = require('axios');
+const mongoose = require('mongoose');
 const Job = require('../models/job.model');
 const House = require('../models/house.model');
 const User = require('../models/user.model');
 const { protect } = require('../middleware/auth');
+
+// Helper function to generate next JobID (000001, 000002, etc.)
+async function generateNextJobId() {
+  try {
+    // Find the highest jobId number by converting to number for proper sorting
+    const lastJob = await Job.findOne({ 
+      jobId: { $exists: true, $ne: null, $regex: /^\d+$/ } 
+    })
+      .select('jobId')
+      .lean();
+    
+    if (!lastJob || !lastJob.jobId) {
+      return '000001';
+    }
+    
+    // Extract number from jobId (e.g., "000001" -> 1)
+    const lastNumber = parseInt(lastJob.jobId, 10);
+    
+    // Check if it's a valid number
+    if (isNaN(lastNumber)) {
+      return '000001';
+    }
+    
+    const nextNumber = lastNumber + 1;
+    
+    // Format as 6-digit string with leading zeros
+    return nextNumber.toString().padStart(6, '0');
+  } catch (error) {
+    console.error('Error generating JobID:', error);
+    // Fallback: use timestamp-based ID if there's an error
+    const timestamp = Date.now().toString().slice(-6);
+    return timestamp.padStart(6, '0');
+  }
+}
+
+// Helper function to generate multiple JobIDs in sequence (for bulk operations)
+async function generateJobIds(count) {
+  try {
+    if (!count || count <= 0) {
+      throw new Error('Count must be greater than 0');
+    }
+    
+    // Get the last JobID - find all jobs with numeric jobIds and get the max
+    const jobsWithIds = await Job.find({ 
+      jobId: { $exists: true, $ne: null, $regex: /^\d+$/ } 
+    })
+      .select('jobId')
+      .lean();
+    
+    let startNumber = 1;
+    if (jobsWithIds && jobsWithIds.length > 0) {
+      // Find the maximum numeric jobId
+      const numbers = jobsWithIds
+        .map(job => parseInt(job.jobId, 10))
+        .filter(num => !isNaN(num));
+      
+      if (numbers.length > 0) {
+        startNumber = Math.max(...numbers) + 1;
+      }
+    }
+    
+    // Generate sequential JobIDs
+    const jobIds = [];
+    for (let i = 0; i < count; i++) {
+      const jobId = (startNumber + i).toString().padStart(6, '0');
+      jobIds.push(jobId);
+    }
+    
+    console.log(`Generated ${count} JobIDs starting from ${jobIds[0]}`);
+    return jobIds;
+  } catch (error) {
+    console.error('Error generating JobIDs:', error);
+    // Fallback: generate based on timestamp
+    const timestamp = Date.now();
+    const jobIds = [];
+    for (let i = 0; i < count; i++) {
+      const jobId = ((timestamp % 1000000) + i).toString().padStart(6, '0');
+      jobIds.push(jobId);
+    }
+    console.log(`Using fallback JobIDs starting from ${jobIds[0]}`);
+    return jobIds;
+  }
+}
+
+// Helper function to sort jobs by postcode/location proximity
+function sortJobsByProximity(jobs) {
+  if (jobs.length === 0) return jobs;
+  
+  // Separate jobs with and without coordinates
+  const jobsWithCoords = jobs.filter(job => {
+    const lat = job.house?.latitude || job.address?.latitude || job.location?.latitude;
+    const lng = job.house?.longitude || job.address?.longitude || job.location?.longitude;
+    return lat != null && lng != null;
+  });
+  
+  const jobsWithoutCoords = jobs.filter(job => {
+    const lat = job.house?.latitude || job.address?.latitude || job.location?.latitude;
+    const lng = job.house?.longitude || job.address?.longitude || job.location?.longitude;
+    return lat == null || lng == null;
+  });
+  
+  // If no jobs have coordinates, sort by postcode
+  if (jobsWithCoords.length === 0) {
+    return jobs.sort((a, b) => {
+      const postcodeA = (a.house?.postcode || a.address?.zipCode || '').toString();
+      const postcodeB = (b.house?.postcode || b.address?.zipCode || '').toString();
+      return postcodeA.localeCompare(postcodeB);
+    });
+  }
+  
+  // Use nearest neighbor algorithm for jobs with coordinates
+  const ordered = [];
+  const remaining = [...jobsWithCoords];
+  
+  // Start with first job
+  let current = remaining.shift();
+  ordered.push(current);
+  
+  while (remaining.length > 0) {
+    let nearestIndex = 0;
+    let minDistance = Infinity;
+    
+    const currentLat = current.house?.latitude || current.address?.latitude || current.location?.latitude;
+    const currentLng = current.house?.longitude || current.address?.longitude || current.location?.longitude;
+    
+    for (let i = 0; i < remaining.length; i++) {
+      const jobLat = remaining[i].house?.latitude || remaining[i].address?.latitude || remaining[i].location?.latitude;
+      const jobLng = remaining[i].house?.longitude || remaining[i].address?.longitude || remaining[i].location?.longitude;
+      
+      if (jobLat != null && jobLng != null) {
+        const distance = calculateDistance(currentLat, currentLng, jobLat, jobLng);
+        if (distance < minDistance) {
+          minDistance = distance;
+          nearestIndex = i;
+        }
+      }
+    }
+    
+    current = remaining.splice(nearestIndex, 1)[0];
+    ordered.push(current);
+  }
+  
+  // Add jobs without coordinates at the end, sorted by postcode
+  jobsWithoutCoords.sort((a, b) => {
+    const postcodeA = (a.house?.postcode || a.address?.zipCode || '').toString();
+    const postcodeB = (b.house?.postcode || b.address?.zipCode || '').toString();
+    return postcodeA.localeCompare(postcodeB);
+  });
+  
+  return [...ordered, ...jobsWithoutCoords];
+}
 
 // @route   GET /api/jobs
 // @desc    Get all jobs
@@ -32,15 +187,18 @@ router.get('/', protect, async (req, res) => {
 
     // If user is meter_reader, only show their jobs
     if (req.user.role === 'meter_reader') {
-      query.assignedTo = req.user.id;
+      query.assignedTo = req.user._id;
     }
 
-    const jobs = await Job.find(query)
+    let jobs = await Job.find(query)
       .populate('house', 'address postcode city county latitude longitude meterType')
       .populate('assignedTo', 'firstName lastName username employeeId department')
-      .sort({ scheduledDate: 1 })
+      .sort({ sequenceNumber: 1, scheduledDate: 1 }) // Sort by sequence number first, then scheduled date
       .limit(limit * 1)
       .skip((page - 1) * limit);
+
+    // Sort by postcode/location proximity for better route planning
+    jobs = sortJobsByProximity(jobs);
 
     const total = await Job.countDocuments(query);
 
@@ -68,13 +226,53 @@ router.post('/', protect, async (req, res) => {
     const jobData = req.body;
     
     // Validate that assigned user is from meter department
-    if (jobData.assignedTo) {
+    if (!jobData.assignedTo) {
+      return res.status(400).json({ 
+        message: 'Assigned user is required' 
+      });
+    }
+    
       const assignedUser = await User.findById(jobData.assignedTo);
       if (!assignedUser || assignedUser.department !== 'meter') {
         return res.status(400).json({ 
           message: 'Assigned user must be from meter department' 
         });
       }
+    
+    // Ensure assignedTo is converted to ObjectId
+    const mongoose = require('mongoose');
+    if (!mongoose.Types.ObjectId.isValid(jobData.assignedTo)) {
+      return res.status(400).json({ 
+        message: 'Invalid assigned user ID' 
+      });
+    }
+    jobData.assignedTo = new mongoose.Types.ObjectId(jobData.assignedTo);
+    
+    // Generate meaningful JobID
+    if (!jobData.jobId) {
+      jobData.jobId = await generateNextJobId();
+    }
+    
+    // Assign sequence number if not provided
+    // Sequence number should be the next number for this user on the scheduled date
+    if (jobData.sequenceNumber === undefined || jobData.sequenceNumber === null) {
+      const scheduledDate = jobData.scheduledDate ? new Date(jobData.scheduledDate) : new Date();
+      const startOfDay = new Date(scheduledDate.getFullYear(), scheduledDate.getMonth(), scheduledDate.getDate());
+      const endOfDay = new Date(scheduledDate.getFullYear(), scheduledDate.getMonth(), scheduledDate.getDate() + 1);
+      
+      // Find the highest sequence number for this user on this date
+      const lastJob = await Job.findOne({
+        assignedTo: jobData.assignedTo,
+        scheduledDate: {
+          $gte: startOfDay,
+          $lt: endOfDay
+        },
+        sequenceNumber: { $ne: null }
+      })
+      .sort({ sequenceNumber: -1 })
+      .select('sequenceNumber');
+      
+      jobData.sequenceNumber = lastJob && lastJob.sequenceNumber !== null ? lastJob.sequenceNumber + 1 : 1;
     }
     
     const job = await Job.create(jobData);
@@ -88,15 +286,353 @@ router.post('/', protect, async (req, res) => {
     
     // Emit WebSocket event for job creation
     if (global.io) {
+      // Notify admin room
       global.io.to('admin_room').emit('jobUpdate', {
         type: 'jobCreated',
         job: populatedJob,
         timestamp: new Date()
       });
+
+      // Also notify the assigned user about new job
+      if (populatedJob.assignedTo && populatedJob.assignedTo._id) {
+        global.io.to(`user_${populatedJob.assignedTo._id}`).emit('jobUpdate', {
+          type: 'newJobAssigned',
+          job: populatedJob,
+          timestamp: new Date(),
+          message: 'You have been assigned a new job'
+        });
+      }
     }
   } catch (error) {
     console.error('Create job error:', error);
     res.status(500).json({ message: 'Server Error', error: error.message });
+  }
+});
+
+// Configure multer for Excel file uploads
+const excelStorage = multer.memoryStorage();
+const excelUpload = multer({
+  storage: excelStorage,
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB limit
+  },
+  fileFilter: function (req, file, cb) {
+    const allowedMimes = [
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+      'application/vnd.ms-excel', // .xls
+      'application/vnd.ms-excel.sheet.macroEnabled.12', // .xlsm
+      'text/csv' // .csv
+    ];
+    if (allowedMimes.includes(file.mimetype) || file.originalname.match(/\.(xlsx|xls|csv)$/i)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only Excel files (.xlsx, .xls, .csv) are allowed'), false);
+    }
+  }
+});
+
+// Helper function to geocode address
+async function geocodeAddress(addressString) {
+  try {
+    // Using Nominatim (OpenStreetMap) geocoding API - free, no API key required
+    const encodedAddress = encodeURIComponent(addressString);
+    const response = await axios.get(`https://nominatim.openstreetmap.org/search?format=json&q=${encodedAddress}&limit=1`, {
+      headers: {
+        'User-Agent': 'MeterMate-App/1.0'
+      },
+      timeout: 5000
+    });
+
+    if (response.data && response.data.length > 0) {
+      return {
+        latitude: parseFloat(response.data[0].lat),
+        longitude: parseFloat(response.data[0].lon)
+      };
+    }
+    return null;
+  } catch (error) {
+    console.error('Geocoding error:', error.message);
+    return null;
+  }
+}
+
+// Helper function to order jobs by nearest neighbor (location-based ordering)
+function orderJobsByLocation(jobsWithCoords) {
+  if (jobsWithCoords.length === 0) return [];
+
+  // Use nearest neighbor algorithm
+  const ordered = [];
+  const remaining = [...jobsWithCoords];
+  
+  // Start with first job
+  let current = remaining.shift();
+  ordered.push(current);
+
+  while (remaining.length > 0) {
+    // Find nearest job to current
+    let nearestIndex = 0;
+    let minDistance = Infinity;
+
+    for (let i = 0; i < remaining.length; i++) {
+      const distance = calculateDistance(
+        current.latitude, current.longitude,
+        remaining[i].latitude, remaining[i].longitude
+      );
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestIndex = i;
+      }
+    }
+
+    current = remaining.splice(nearestIndex, 1)[0];
+    ordered.push(current);
+  }
+
+  return ordered;
+}
+
+// @route   POST /api/jobs/upload-excel
+// @desc    Upload Excel file with job details and create jobs ordered by location
+// @access  Private (Admin only)
+router.post('/upload-excel', protect, excelUpload.single('excelFile'), async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied. Admin only.' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ message: 'No Excel file uploaded' });
+    }
+
+    const { assignedTo, scheduledDate, priority = 'medium' } = req.body;
+
+    if (!assignedTo) {
+      return res.status(400).json({ message: 'Assigned user is required' });
+    }
+
+    // Validate assigned user
+    const assignedUser = await User.findById(assignedTo);
+    if (!assignedUser || assignedUser.department !== 'meter') {
+      return res.status(400).json({ message: 'Assigned user must be from meter department' });
+    }
+
+    // Parse Excel file
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const jsonData = XLSX.utils.sheet_to_json(worksheet);
+
+    console.log(`Excel file parsed: ${jsonData.length} rows found`);
+
+    if (jsonData.length === 0) {
+      return res.status(400).json({ message: 'Excel file is empty' });
+    }
+
+    // Log first row to help debug column mapping
+    if (jsonData.length > 0) {
+      console.log('Sample row data:', JSON.stringify(jsonData[0], null, 2));
+    }
+
+    // Expected columns: street, city, state, zipCode, jobType, sup, jt, cust, meterMake, meterModel, meterSerialNumber, notes
+    const jobsData = [];
+    const jobsWithCoords = [];
+
+    // Process each row and geocode addresses
+    for (let i = 0; i < jsonData.length; i++) {
+      const row = jsonData[i];
+      
+      // Build address string
+      const street = (row.street || row.Street || row.address || row.Address || '').toString().trim();
+      const city = (row.city || row.City || '').toString().trim();
+      const state = (row.state || row.State || '').toString().trim();
+      const zipCode = (row.zipCode || row['zipCode'] || row['Zip Code'] || row.postcode || row.Postcode || '').toString().trim();
+      
+      if (!street || !city || !state) {
+        console.warn(`Skipping row ${i + 1}: Missing required address fields (street: "${street}", city: "${city}", state: "${state}")`);
+        console.warn(`Row ${i + 1} data:`, JSON.stringify(row, null, 2));
+        continue;
+      }
+
+      const addressString = `${street}, ${city}, ${state} ${zipCode}`;
+
+      // Geocode address
+      const coords = await geocodeAddress(addressString);
+      
+      const jobData = {
+        jobType: (row.jobType || row['Job Type'] || row.type || 'electricity').toString().toLowerCase(),
+        address: {
+          street,
+          city,
+          state,
+          zipCode,
+          country: 'USA'
+        },
+        assignedTo: new mongoose.Types.ObjectId(assignedTo),
+        priority: (row.priority || priority).toString().toLowerCase(),
+        status: 'pending',
+        scheduledDate: scheduledDate ? (scheduledDate.includes('T') ? new Date(scheduledDate) : new Date(scheduledDate + 'T00:00:00')) : new Date(),
+        sup: (row.sup || row.Sup || row.supplier || '').toString().trim(),
+        jt: (row.jt || row.JT || row['Job Title'] || '').toString().trim(),
+        cust: (row.cust || row.Cust || row.customer || '').toString().trim(),
+        meterMake: (row.meterMake || row['Meter Make'] || row.make || '').toString().trim(),
+        meterModel: (row.meterModel || row['Meter Model'] || row.model || '').toString().trim(),
+        meterSerialNumber: (row.meterSerialNumber || row['Meter Serial Number'] || row.serialNumber || '').toString().trim(),
+        notes: (row.notes || row.Notes || '').toString().trim(),
+      };
+
+      // Add location if geocoded
+      if (coords) {
+        jobData.address.latitude = coords.latitude;
+        jobData.address.longitude = coords.longitude;
+        jobData.location = { latitude: coords.latitude, longitude: coords.longitude };
+        jobsWithCoords.push({ ...jobData, latitude: coords.latitude, longitude: coords.longitude });
+      } else {
+        jobsWithCoords.push({ ...jobData, latitude: null, longitude: null });
+      }
+
+      jobsData.push(jobData);
+
+      // Rate limiting for geocoding (avoid too many requests)
+      if (i < jsonData.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay
+      }
+    }
+
+    // Order jobs by nearest neighbor algorithm
+    const orderedJobs = orderJobsByLocation(jobsWithCoords.filter(j => j.latitude !== null));
+    const jobsWithoutCoords = jobsWithCoords.filter(j => j.latitude === null);
+
+    console.log(`Total jobs to create: ${orderedJobs.length + jobsWithoutCoords.length}`);
+    console.log(`Jobs with coordinates: ${orderedJobs.length}, Jobs without coordinates: ${jobsWithoutCoords.length}`);
+
+    // Assign sequence numbers and generate JobIDs
+    let sequenceNumber = 1;
+    const jobsToCreate = [];
+    const totalJobsToCreate = orderedJobs.length + jobsWithoutCoords.length;
+    
+    // Generate all JobIDs at once to avoid race conditions
+    const jobIds = await generateJobIds(totalJobsToCreate);
+    let jobIdIndex = 0;
+
+    // Add ordered jobs first
+    for (const job of orderedJobs) {
+      const { latitude, longitude, ...jobData } = job;
+      jobData.sequenceNumber = sequenceNumber++;
+      // Assign JobID from pre-generated list
+      jobData.jobId = jobIds[jobIdIndex++];
+      jobsToCreate.push(jobData);
+    }
+
+    // Add jobs without coordinates at the end
+    for (const job of jobsWithoutCoords) {
+      const { latitude, longitude, ...jobData } = job;
+      jobData.sequenceNumber = sequenceNumber++;
+      // Assign JobID from pre-generated list
+      jobData.jobId = jobIds[jobIdIndex++];
+      jobsToCreate.push(jobData);
+    }
+
+    if (jobsToCreate.length === 0) {
+      console.error('No jobs to create after processing Excel file');
+      return res.status(400).json({ 
+        message: 'No valid jobs found in Excel file. Please check the file format and required columns (street, city, state).' 
+      });
+    }
+
+    console.log(`Creating ${jobsToCreate.length} jobs...`);
+
+    // Create jobs in bulk
+    let createdJobs;
+    try {
+      createdJobs = await Job.insertMany(jobsToCreate);
+      console.log(`Successfully created ${createdJobs.length} jobs in database`);
+    } catch (insertError) {
+      console.error('Error inserting jobs:', insertError);
+      
+      // Check if it's a duplicate key error (jobId conflict)
+      if (insertError.code === 11000) {
+        // Try to find which jobId caused the conflict
+        const duplicateKey = insertError.keyPattern || insertError.keyValue;
+        return res.status(400).json({ 
+          message: `Duplicate JobID detected. Please try uploading again. Error: ${insertError.message}`,
+          error: 'DUPLICATE_JOBID'
+        });
+      }
+      
+      // Check for validation errors
+      if (insertError.name === 'ValidationError') {
+        const validationErrors = Object.values(insertError.errors || {}).map(err => err.message);
+        return res.status(400).json({ 
+          message: `Validation error: ${validationErrors.join(', ')}`,
+          errors: validationErrors
+        });
+      }
+      
+      throw insertError; // Re-throw if it's not a handled error
+    }
+
+    // Populate created jobs
+    const populatedJobs = await Job.find({ _id: { $in: createdJobs.map(j => j._id) } })
+      .populate('assignedTo', 'firstName lastName username employeeId department');
+
+    // Emit WebSocket event to admin room
+    if (global.io) {
+      global.io.to('admin_room').emit('jobUpdate', {
+        type: 'jobsBulkCreated',
+        count: createdJobs.length,
+        jobs: populatedJobs,
+        timestamp: new Date()
+      });
+
+      // Also notify the assigned user about new jobs
+      global.io.to(`user_${assignedTo}`).emit('jobUpdate', {
+        type: 'newJobsAssigned',
+        count: createdJobs.length,
+        jobs: populatedJobs,
+        timestamp: new Date(),
+        message: `You have been assigned ${createdJobs.length} new job(s)`
+      });
+
+      console.log(`WebSocket notifications sent to admin_room and user_${assignedTo}`);
+    }
+
+    res.status(201).json({
+      success: true,
+      message: `Successfully created ${createdJobs.length} jobs ordered by location`,
+      count: createdJobs.length,
+      jobs: populatedJobs
+    });
+  } catch (error) {
+    console.error('Excel upload error:', error);
+    console.error('Error stack:', error.stack);
+    
+    // Provide more detailed error messages
+    let errorMessage = 'Server Error';
+    let statusCode = 500;
+    
+    if (error.message) {
+      errorMessage = error.message;
+    }
+    
+    // Handle specific error types
+    if (error.code === 11000) {
+      statusCode = 400;
+      errorMessage = `Duplicate entry detected: ${error.message}`;
+    } else if (error.name === 'ValidationError') {
+      statusCode = 400;
+      const validationErrors = Object.values(error.errors || {}).map(err => err.message);
+      errorMessage = `Validation error: ${validationErrors.join(', ')}`;
+    } else if (error.response) {
+      // Axios error
+      statusCode = error.response.status || 500;
+      errorMessage = error.response.data?.message || error.message;
+    }
+    
+    res.status(statusCode).json({ 
+      message: errorMessage, 
+      error: error.message,
+      ...(process.env.NODE_ENV === 'development' && { stack: error.stack })
+    });
   }
 });
 
@@ -111,7 +647,7 @@ router.get('/assigned', protect, async (req, res) => {
 
     const { status, jobType, priority } = req.query;
     
-    let query = { assignedTo: req.user.id };
+    let query = { assignedTo: req.user._id };
     
     if (status) {
       query.status = status;
@@ -125,10 +661,13 @@ router.get('/assigned', protect, async (req, res) => {
       query.priority = priority;
     }
 
-    const jobs = await Job.find(query)
+    let jobs = await Job.find(query)
       .populate('house', 'address postcode city county latitude longitude meterType')
       .populate('assignedTo', 'firstName lastName username employeeId department')
-      .sort({ scheduledDate: 1 });
+      .sort({ sequenceNumber: 1, scheduledDate: 1 }); // Sort by sequence number first, then scheduled date
+
+    // Sort by postcode/location proximity for better route planning
+    jobs = sortJobsByProximity(jobs);
 
     res.json({
       jobs,
@@ -162,7 +701,7 @@ router.get('/today', protect, async (req, res) => {
     const { status, jobType, priority } = req.query;
     
     let query = { 
-      assignedTo: req.user.id,
+      assignedTo: req.user._id,
       scheduledDate: {
         $gte: startOfDay,
         $lt: endOfDay
@@ -181,10 +720,13 @@ router.get('/today', protect, async (req, res) => {
       query.priority = priority;
     }
 
-    const jobs = await Job.find(query)
+    let jobs = await Job.find(query)
       .populate('house', 'address postcode city county latitude longitude meterType')
       .populate('assignedTo', 'firstName lastName username employeeId department')
-      .sort({ scheduledDate: 1 });
+      .sort({ sequenceNumber: 1, scheduledDate: 1 }); // Sort by sequence number first, then scheduled date
+
+    // Sort by postcode/location proximity for better route planning
+    jobs = sortJobsByProximity(jobs);
 
     // Get job counts by status
     const pendingCount = await Job.countDocuments({
@@ -241,7 +783,7 @@ router.get('/today-geo', protect, async (req, res) => {
     const { status, jobType, priority, userLatitude, userLongitude } = req.query;
     
     let query = { 
-      assignedTo: req.user.id,
+      assignedTo: req.user._id,
       scheduledDate: {
         $gte: startOfDay,
         $lt: endOfDay
@@ -260,30 +802,30 @@ router.get('/today-geo', protect, async (req, res) => {
       query.priority = priority;
     }
 
-    const jobs = await Job.find(query)
+    let jobs = await Job.find(query)
       .populate('house', 'address postcode city county latitude longitude meterType')
       .populate('assignedTo', 'firstName lastName username employeeId department')
-      .sort({ scheduledDate: 1 });
+      .sort({ sequenceNumber: 1, scheduledDate: 1 }); // Sort by sequence number first, then scheduled date
 
-    // If user location is provided, sort by geographical distance
+    // Sort by postcode/location proximity for better route planning
+    jobs = sortJobsByProximity(jobs);
+
+    // If user location is provided, add distance from user for display
     if (userLatitude && userLongitude) {
       const userLat = parseFloat(userLatitude);
       const userLng = parseFloat(userLongitude);
 
       jobs.forEach(job => {
-        if (job.house && job.house.latitude && job.house.longitude) {
-          const distance = calculateDistance(
-            userLat, userLng,
-            job.house.latitude, job.house.longitude
-          );
+        const lat = job.house?.latitude || job.address?.latitude || job.location?.latitude;
+        const lng = job.house?.longitude || job.address?.longitude || job.location?.longitude;
+        
+        if (lat != null && lng != null) {
+          const distance = calculateDistance(userLat, userLng, lat, lng);
           job.distanceFromUser = distance;
         } else {
           job.distanceFromUser = Infinity; // Put jobs without location at the end
         }
       });
-
-      // Sort by distance (nearest first)
-      jobs.sort((a, b) => a.distanceFromUser - b.distanceFromUser);
     }
 
     // Get job counts by status
@@ -351,7 +893,7 @@ router.get('/my-count', protect, async (req, res) => {
 
     const { status, jobType, priority, dateRange } = req.query;
 
-    let query = { assignedTo: req.user.id };
+    let query = { assignedTo: req.user._id };
 
     // Add filters
     if (status) {
@@ -1026,7 +1568,12 @@ router.put('/:id/complete', protect, async (req, res) => {
       startLocation,
       endLocation,
       locationHistory,
-      notes 
+      notes,
+      risk,
+      mInspec,
+      numRegisters,
+      registerIds,
+      registerValues
     } = req.body;
 
     const job = await Job.findById(req.params.id);
@@ -1038,6 +1585,35 @@ router.put('/:id/complete', protect, async (req, res) => {
     // Check if user is assigned to this job or is admin
     if (job.assignedTo.toString() !== req.user.id && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Not authorized to complete this job' });
+    }
+
+    // Enforce sequential job completion - can only complete jobs in order
+    // This applies to all meter readers
+    if (req.user.role === 'meter_reader' && job.sequenceNumber !== null) {
+      const scheduledDate = job.scheduledDate ? new Date(job.scheduledDate) : new Date();
+      const startOfDay = new Date(scheduledDate.getFullYear(), scheduledDate.getMonth(), scheduledDate.getDate());
+      const endOfDay = new Date(scheduledDate.getFullYear(), scheduledDate.getMonth(), scheduledDate.getDate() + 1);
+      
+      // Find any pending or in_progress job with a lower sequence number for the same scheduled date
+      const earlierPendingJob = await Job.findOne({
+        assignedTo: req.user._id,
+        status: { $in: ['pending', 'in_progress'] },
+        scheduledDate: {
+          $gte: startOfDay,
+          $lt: endOfDay
+        },
+        sequenceNumber: { $lt: job.sequenceNumber, $ne: null }
+      }).sort({ sequenceNumber: 1 });
+
+      if (earlierPendingJob) {
+        return res.status(400).json({ 
+          message: `You cannot skip jobs in the sequence. Please complete job ${earlierPendingJob.jobId || `#${earlierPendingJob.sequenceNumber}`} first before completing job ${job.jobId || `#${job.sequenceNumber}`}.`,
+          nextJobId: earlierPendingJob._id,
+          nextJobDisplayId: earlierPendingJob.jobId || `#${earlierPendingJob.sequenceNumber}`,
+          nextSequenceNumber: earlierPendingJob.sequenceNumber,
+          currentJobDisplayId: job.jobId || `#${job.sequenceNumber}`
+        });
+      }
     }
 
     // Calculate distance if start and end locations are provided
@@ -1059,7 +1635,12 @@ router.put('/:id/complete', protect, async (req, res) => {
       ...(startLocation && { startLocation }),
       ...(endLocation && { endLocation }),
       ...(locationHistory && { locationHistory }),
-      ...(notes && { notes })
+      ...(notes && { notes }),
+      ...(typeof risk === 'boolean' && { risk }),
+      ...(typeof mInspec === 'boolean' && { mInspec }),
+      ...(typeof numRegisters === 'number' && { numRegisters }),
+      ...(Array.isArray(registerIds) && registerIds.length > 0 && { registerIds }),
+      ...(Array.isArray(registerValues) && registerValues.length > 0 && { registerValues })
     };
 
     const updatedJob = await Job.findByIdAndUpdate(
@@ -1083,6 +1664,36 @@ router.put('/:id/complete', protect, async (req, res) => {
         job: updatedJob,
         userId: req.user.id
       });
+      
+      // If this was the user's last job for today, send an automatic mileage message
+      try {
+        const today = new Date();
+        const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+        const remaining = await Job.countDocuments({
+          assignedTo: req.user._id,
+          scheduledDate: { $gte: startOfDay, $lt: endOfDay },
+          status: { $ne: 'completed' }
+        });
+        if (remaining === 0) {
+          const completedToday = await Job.find({
+            assignedTo: req.user._id,
+            scheduledDate: { $gte: startOfDay, $lt: endOfDay },
+            status: 'completed'
+          });
+          const totalKm = completedToday.reduce((sum, j) => sum + (j.distanceTraveled || 0), 0);
+          // Convert kilometers to miles (1 km = 0.621371 miles)
+          const totalMiles = totalKm * 0.621371;
+          const dateStr = `${today.getDate().toString().padStart(2, '0')}/${(today.getMonth()+1).toString().padStart(2, '0')}/${today.getFullYear()}`;
+          const title = 'Daily Mileage Summary';
+          const body = `You completed ${totalMiles.toFixed(2)} miles on ${dateStr}. Total jobs completed: ${completedToday.length}.`;
+          const Message = require('../models/message.model');
+          const msg = await Message.create({ recipient: req.user.id, title, body, meta: { date: dateStr, totalKm, totalMiles, jobCount: completedToday.length } });
+          global.io.to(`user_${req.user.id}`).emit('message', { type: 'new_message', message: msg });
+        }
+      } catch (e) {
+        console.error('Auto mileage message error:', e.message);
+      }
     }
 
     res.json({
@@ -1119,6 +1730,34 @@ router.post('/:id/start', protect, async (req, res) => {
     // Check if job is in pending status
     if (job.status !== 'pending') {
       return res.status(400).json({ message: 'Job is not in pending status' });
+    }
+
+    // Enforce sequential job starting - can only start jobs in order
+    if (job.sequenceNumber !== null) {
+      const scheduledDate = job.scheduledDate ? new Date(job.scheduledDate) : new Date();
+      const startOfDay = new Date(scheduledDate.getFullYear(), scheduledDate.getMonth(), scheduledDate.getDate());
+      const endOfDay = new Date(scheduledDate.getFullYear(), scheduledDate.getMonth(), scheduledDate.getDate() + 1);
+      
+      // Find any pending job with a lower sequence number for the same scheduled date
+      const earlierPendingJob = await Job.findOne({
+        assignedTo: req.user._id,
+        status: 'pending',
+        scheduledDate: {
+          $gte: startOfDay,
+          $lt: endOfDay
+        },
+        sequenceNumber: { $lt: job.sequenceNumber, $ne: null }
+      }).sort({ sequenceNumber: 1 });
+
+      if (earlierPendingJob) {
+        return res.status(400).json({ 
+          message: `You cannot skip jobs in the sequence. Please start job ${earlierPendingJob.jobId || `#${earlierPendingJob.sequenceNumber}`} first before starting job ${job.jobId || `#${job.sequenceNumber}`}.`,
+          nextJobId: earlierPendingJob._id,
+          nextJobDisplayId: earlierPendingJob.jobId || `#${earlierPendingJob.sequenceNumber}`,
+          nextSequenceNumber: earlierPendingJob.sequenceNumber,
+          currentJobDisplayId: job.jobId || `#${job.sequenceNumber}`
+        });
+      }
     }
 
     const { startLocation } = req.body;
@@ -1299,9 +1938,122 @@ router.delete('/:id', protect, async (req, res) => {
       return res.status(404).json({ message: 'Job not found' });
     }
 
+    // Emit WebSocket event for job deletion
+    if (global.io) {
+      global.io.to('admin_room').emit('jobUpdate', {
+        type: 'jobDeleted',
+        jobId: req.params.id,
+        timestamp: new Date()
+      });
+    }
+
     res.json({ message: 'Job deleted successfully' });
   } catch (error) {
     console.error('Delete job error:', error);
+    res.status(500).json({ message: 'Server Error', error: error.message });
+  }
+});
+
+// @route   DELETE /api/jobs/bulk
+// @desc    Delete multiple jobs by IDs
+// @access  Private (Admin only)
+router.delete('/bulk', protect, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied. Admin only.' });
+    }
+
+    const { jobIds } = req.body;
+
+    if (!jobIds || !Array.isArray(jobIds) || jobIds.length === 0) {
+      return res.status(400).json({ message: 'Job IDs array is required' });
+    }
+
+    // Validate all IDs are valid ObjectIds
+    const validIds = jobIds.filter(id => mongoose.Types.ObjectId.isValid(id));
+    
+    if (validIds.length === 0) {
+      return res.status(400).json({ message: 'No valid job IDs provided' });
+    }
+
+    // Delete jobs
+    const result = await Job.deleteMany({ _id: { $in: validIds } });
+
+    // Emit WebSocket event for bulk job deletion
+    if (global.io) {
+      global.io.to('admin_room').emit('jobUpdate', {
+        type: 'jobsBulkDeleted',
+        count: result.deletedCount,
+        jobIds: validIds,
+        timestamp: new Date()
+      });
+    }
+
+    res.json({ 
+      success: true,
+      message: `Successfully deleted ${result.deletedCount} job(s)`,
+      deletedCount: result.deletedCount
+    });
+  } catch (error) {
+    console.error('Bulk delete jobs error:', error);
+    res.status(500).json({ message: 'Server Error', error: error.message });
+  }
+});
+
+// @route   DELETE /api/jobs/user/:userId
+// @desc    Delete all jobs assigned to a specific user
+// @access  Private (Admin only)
+router.delete('/user/:userId', protect, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied. Admin only.' });
+    }
+
+    const { userId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+
+    // Verify user exists
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Delete all jobs assigned to this user
+    const result = await Job.deleteMany({ assignedTo: userId });
+
+    // Emit WebSocket event for bulk job deletion
+    if (global.io) {
+      global.io.to('admin_room').emit('jobUpdate', {
+        type: 'userJobsDeleted',
+        userId: userId,
+        count: result.deletedCount,
+        timestamp: new Date()
+      });
+
+      // Also notify the user
+      global.io.to(`user_${userId}`).emit('jobUpdate', {
+        type: 'allJobsDeleted',
+        message: 'All your jobs have been deleted by admin',
+        timestamp: new Date()
+      });
+    }
+
+    res.json({ 
+      success: true,
+      message: `Successfully deleted ${result.deletedCount} job(s) for user ${user.firstName} ${user.lastName}`,
+      deletedCount: result.deletedCount,
+      user: {
+        _id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        username: user.username
+      }
+    });
+  } catch (error) {
+    console.error('Delete user jobs error:', error);
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
 });

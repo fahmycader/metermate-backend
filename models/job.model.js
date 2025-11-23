@@ -32,6 +32,12 @@ const jobSchema = new mongoose.Schema({
       default: 'USA',
       trim: true,
     },
+    latitude: {
+      type: Number,
+    },
+    longitude: {
+      type: Number,
+    },
   },
   house: {
     type: mongoose.Schema.Types.ObjectId,
@@ -56,6 +62,16 @@ const jobSchema = new mongoose.Schema({
     type: Date,
     required: [true, 'Scheduled date is required'],
   },
+  jobId: {
+    type: String,
+    unique: true,
+    sparse: true, // Allow null values but enforce uniqueness when present
+    trim: true,
+  },
+  sequenceNumber: {
+    type: Number,
+    default: null, // null means not sequenced, numbers indicate order
+  },
   completedDate: {
     type: Date,
   },
@@ -63,6 +79,41 @@ const jobSchema = new mongoose.Schema({
     type: String,
     trim: true,
   },
+  sup: {
+    type: String,
+    trim: true,
+    default: '',
+  },
+  jt: {
+    type: String,
+    trim: true,
+    default: '',
+  },
+  cust: {
+    type: String,
+    trim: true,
+    default: '',
+  },
+  meterMake: {
+    type: String,
+    trim: true,
+    default: '',
+  },
+  meterModel: {
+    type: String,
+    trim: true,
+    default: '',
+  },
+  meterSerialNumber: {
+    type: String,
+    trim: true,
+    default: '',
+  },
+  risk: { type: Boolean, default: false },
+  mInspec: { type: Boolean, default: false },
+  numRegisters: { type: Number, default: 1 },
+  registerIds: [String],
+  registerValues: [Number],
   meterReadings: {
     electric: Number,
     gas: Number,
