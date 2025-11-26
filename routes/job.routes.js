@@ -529,7 +529,30 @@ router.post('/upload-excel', protect, excelUpload.single('excelFile'), async (re
         employeeId: employeeId, // Add employeeId from assigned user
         priority: (row.priority || priority).toString().toLowerCase(),
         status: 'pending',
-        scheduledDate: scheduledDate ? (scheduledDate.includes('T') ? new Date(scheduledDate) : new Date(scheduledDate + 'T00:00:00')) : new Date(),
+        scheduledDate: (() => {
+          // Validate and set scheduled date
+          let jobScheduledDate = scheduledDate ? (scheduledDate.includes('T') ? new Date(scheduledDate) : new Date(scheduledDate + 'T00:00:00')) : new Date();
+          
+          // Validate scheduled date - must be today or up to 2 days in the future
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          const maxFutureDate = new Date(today);
+          maxFutureDate.setDate(maxFutureDate.getDate() + 2);
+          maxFutureDate.setHours(23, 59, 59, 999);
+          
+          const scheduledDateOnly = new Date(jobScheduledDate);
+          scheduledDateOnly.setHours(0, 0, 0, 0);
+          
+          if (scheduledDateOnly < today) {
+            console.warn(`Row ${i + 1}: Scheduled date is in the past, using today's date instead`);
+            return new Date();
+          } else if (scheduledDateOnly > maxFutureDate) {
+            console.warn(`Row ${i + 1}: Scheduled date is more than 2 days in the future, using max future date instead`);
+            return maxFutureDate;
+          }
+          
+          return jobScheduledDate;
+        })(),
         sup: (row.sup || row.Sup || row.supplier || '').toString().trim(),
         jt: (row.jt || row.JT || row['Job Title'] || '').toString().trim(),
         cust: (row.cust || row.Cust || row.customer || '').toString().trim(),
