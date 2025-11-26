@@ -52,6 +52,16 @@ exports.registerUser = async (req, res) => {
       res.status(400).json({ message: 'Invalid user data' });
     }
   } catch (error) {
+    console.error('Register user error:', error);
+    // Handle duplicate key error (username already exists)
+    if (error.code === 11000) {
+      return res.status(400).json({ message: 'Username already exists' });
+    }
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const errors = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({ message: errors.join(', ') });
+    }
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
 };

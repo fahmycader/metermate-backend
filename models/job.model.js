@@ -151,6 +151,39 @@ const jobSchema = new mongoose.Schema({
     reading: Number,
     timestamp: Date,
   }],
+  // Employee ID tracking
+  employeeId: {
+    type: String,
+    trim: true,
+  },
+  // Points and No Access tracking
+  points: {
+    type: Number,
+    default: 0, // 1 for valid job completion, 0.5 for valid no access
+  },
+  validNoAccess: {
+    type: Boolean,
+    default: false,
+  },
+  noAccessReason: {
+    type: String,
+    trim: true,
+    default: '',
+  },
+  // Valid no access reasons
+  validNoAccessReasons: {
+    type: [String],
+    default: [
+      'Property locked - no key access',
+      'Dog on property - safety concern',
+      'Occupant not home - appointment required',
+      'Meter location inaccessible',
+      'Property under construction',
+      'Hazardous conditions present',
+      'Permission denied by occupant',
+      'Meter damaged - requires repair first',
+    ],
+  },
 }, {
   timestamps: true,
 });

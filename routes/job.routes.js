@@ -248,6 +248,11 @@ router.post('/', protect, async (req, res) => {
     }
     jobData.assignedTo = new mongoose.Types.ObjectId(jobData.assignedTo);
     
+    // Add employeeId from assigned user
+    if (assignedUser && assignedUser.employeeId) {
+      jobData.employeeId = assignedUser.employeeId;
+    }
+    
     // Generate meaningful JobID
     if (!jobData.jobId) {
       jobData.jobId = await generateNextJobId();
@@ -415,6 +420,9 @@ router.post('/upload-excel', protect, excelUpload.single('excelFile'), async (re
     if (!assignedUser || assignedUser.department !== 'meter') {
       return res.status(400).json({ message: 'Assigned user must be from meter department' });
     }
+    
+    // Get employeeId from assigned user
+    const employeeId = assignedUser.employeeId || '';
 
     // Parse Excel file
     const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
@@ -468,6 +476,7 @@ router.post('/upload-excel', protect, excelUpload.single('excelFile'), async (re
           country: 'USA'
         },
         assignedTo: new mongoose.Types.ObjectId(assignedTo),
+        employeeId: employeeId, // Add employeeId from assigned user
         priority: (row.priority || priority).toString().toLowerCase(),
         status: 'pending',
         scheduledDate: scheduledDate ? (scheduledDate.includes('T') ? new Date(scheduledDate) : new Date(scheduledDate + 'T00:00:00')) : new Date(),
@@ -1573,7 +1582,9 @@ router.put('/:id/complete', protect, async (req, res) => {
       mInspec,
       numRegisters,
       registerIds,
-      registerValues
+      registerValues,
+      validNoAccess,
+      noAccessReason
     } = req.body;
 
     const job = await Job.findById(req.params.id);
@@ -1616,6 +1627,10 @@ router.put('/:id/complete', protect, async (req, res) => {
       }
     }
 
+    // Get user's employeeId
+    const user = await require('../models/user.model').findById(req.user.id);
+    const employeeId = user?.employeeId || '';
+
     // Calculate distance if start and end locations are provided
     let calculatedDistance = distanceTraveled || 0;
     if (startLocation && endLocation && !distanceTraveled) {
@@ -1625,9 +1640,38 @@ router.put('/:id/complete', protect, async (req, res) => {
       );
     }
 
+    // Calculate points based on completion type
+    let points = 0;
+    let isValidNoAccess = false;
+    
+    // Valid no access reasons list
+    const validNoAccessReasons = [
+      'Property locked - no key access',
+      'Dog on property - safety concern',
+      'Occupant not home - appointment required',
+      'Meter location inaccessible',
+      'Property under construction',
+      'Hazardous conditions present',
+      'Permission denied by occupant',
+      'Meter damaged - requires repair first',
+    ];
+
+    if (validNoAccess === true && noAccessReason && validNoAccessReasons.includes(noAccessReason)) {
+      // Valid no access = 0.5 points
+      points = 0.5;
+      isValidNoAccess = true;
+    } else if (meterReadings && (meterReadings.electric || meterReadings.gas || meterReadings.water)) {
+      // Valid job completion with meter reading = 1 point
+      points = 1;
+    }
+
     const updateData = {
       status,
       completedDate: new Date(),
+      employeeId,
+      points,
+      validNoAccess: isValidNoAccess,
+      ...(noAccessReason && { noAccessReason }),
       ...(meterReadings && { meterReadings }),
       ...(photos && { photos }),
       ...(location && { location }),
@@ -1681,14 +1725,63 @@ router.put('/:id/complete', protect, async (req, res) => {
             scheduledDate: { $gte: startOfDay, $lt: endOfDay },
             status: 'completed'
           });
+          
+          // Calculate statistics
           const totalKm = completedToday.reduce((sum, j) => sum + (j.distanceTraveled || 0), 0);
           // Convert kilometers to miles (1 km = 0.621371 miles)
           const totalMiles = totalKm * 0.621371;
+          
+          // Jobs completed successfully (with meter reading)
+          const jobsWithReading = completedToday.filter(j => 
+            j.meterReadings && (j.meterReadings.electric || j.meterReadings.gas || j.meterReadings.water)
+          ).length;
+          
+          // Valid No Access jobs completed
+          const validNoAccessJobs = completedToday.filter(j => j.validNoAccess === true).length;
+          
+          // Calculate points
+          const pointsFromJobs = completedToday.filter(j => 
+            j.meterReadings && (j.meterReadings.electric || j.meterReadings.gas || j.meterReadings.water)
+          ).reduce((sum, j) => sum + (j.points || 1), 0);
+          
+          const pointsFromNoAccess = completedToday.filter(j => j.validNoAccess === true)
+            .reduce((sum, j) => sum + (j.points || 0.5), 0);
+          
+          const totalPoints = pointsFromJobs + pointsFromNoAccess;
+          
+          // Calculate mileage payment (assuming £0.45 per mile - adjust as needed)
+          const mileageRate = 0.45; // £0.45 per mile
+          const mileagePayment = totalMiles * mileageRate;
+          
           const dateStr = `${today.getDate().toString().padStart(2, '0')}/${(today.getMonth()+1).toString().padStart(2, '0')}/${today.getFullYear()}`;
-          const title = 'Daily Mileage Summary';
-          const body = `You completed ${totalMiles.toFixed(2)} miles on ${dateStr}. Total jobs completed: ${completedToday.length}.`;
+          const title = 'Daily Mileage & Performance Report';
+          const body = `Daily Report for ${dateStr}:\n\n` +
+            `📊 Mileage: ${totalMiles.toFixed(2)} miles\n` +
+            `✅ Jobs Completed: ${jobsWithReading} (with meter reading)\n` +
+            `🚫 Valid No Access: ${validNoAccessJobs}\n` +
+            `⭐ Points from Jobs: ${pointsFromJobs}\n` +
+            `⭐ Points from No Access: ${pointsFromNoAccess}\n` +
+            `🎯 Total Points: ${totalPoints}\n` +
+            `💰 Mileage Payment: £${mileagePayment.toFixed(2)}`;
+          
           const Message = require('../models/message.model');
-          const msg = await Message.create({ recipient: req.user.id, title, body, meta: { date: dateStr, totalKm, totalMiles, jobCount: completedToday.length } });
+          const msg = await Message.create({ 
+            recipient: req.user.id, 
+            title, 
+            body, 
+            meta: { 
+              date: dateStr, 
+              totalKm, 
+              totalMiles, 
+              jobCount: completedToday.length,
+              jobsWithReading,
+              validNoAccessJobs,
+              pointsFromJobs,
+              pointsFromNoAccess,
+              totalPoints,
+              mileagePayment
+            } 
+          });
           global.io.to(`user_${req.user.id}`).emit('message', { type: 'new_message', message: msg });
         }
       } catch (e) {
