@@ -253,6 +253,31 @@ router.post('/', protect, async (req, res) => {
       jobData.employeeId = assignedUser.employeeId;
     }
     
+    // Validate scheduled date - must be today or up to 2 days in the future
+    if (jobData.scheduledDate) {
+      const scheduledDate = new Date(jobData.scheduledDate);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0); // Start of today
+      const maxFutureDate = new Date(today);
+      maxFutureDate.setDate(maxFutureDate.getDate() + 2); // 2 days from today
+      maxFutureDate.setHours(23, 59, 59, 999); // End of the 2nd day
+      
+      const scheduledDateOnly = new Date(scheduledDate);
+      scheduledDateOnly.setHours(0, 0, 0, 0);
+      
+      if (scheduledDateOnly < today) {
+        return res.status(400).json({ 
+          message: 'Scheduled date cannot be in the past. Please select today or a future date (max 2 days).' 
+        });
+      }
+      
+      if (scheduledDateOnly > maxFutureDate) {
+        return res.status(400).json({ 
+          message: 'Scheduled date cannot be more than 2 days in the future.' 
+        });
+      }
+    }
+    
     // Generate meaningful JobID
     if (!jobData.jobId) {
       jobData.jobId = await generateNextJobId();
@@ -423,6 +448,31 @@ router.post('/upload-excel', protect, excelUpload.single('excelFile'), async (re
     
     // Get employeeId from assigned user
     const employeeId = assignedUser.employeeId || '';
+    
+    // Validate scheduled date - must be today or up to 2 days in the future
+    if (scheduledDate) {
+      const scheduledDateObj = scheduledDate.includes('T') ? new Date(scheduledDate) : new Date(scheduledDate + 'T00:00:00');
+      const today = new Date();
+      today.setHours(0, 0, 0, 0); // Start of today
+      const maxFutureDate = new Date(today);
+      maxFutureDate.setDate(maxFutureDate.getDate() + 2); // 2 days from today
+      maxFutureDate.setHours(23, 59, 59, 999); // End of the 2nd day
+      
+      const scheduledDateOnly = new Date(scheduledDateObj);
+      scheduledDateOnly.setHours(0, 0, 0, 0);
+      
+      if (scheduledDateOnly < today) {
+        return res.status(400).json({ 
+          message: 'Scheduled date cannot be in the past. Please select today or a future date (max 2 days).' 
+        });
+      }
+      
+      if (scheduledDateOnly > maxFutureDate) {
+        return res.status(400).json({ 
+          message: 'Scheduled date cannot be more than 2 days in the future.' 
+        });
+      }
+    }
 
     // Parse Excel file
     const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
@@ -695,7 +745,7 @@ router.get('/assigned', protect, async (req, res) => {
 });
 
 // @route   GET /api/jobs/today
-// @desc    Get today's jobs assigned to current user (for mobile app)
+// @desc    Get today's jobs and jobs scheduled up to 2 days in the future (for mobile app)
 // @access  Private (Meter readers only)
 router.get('/today', protect, async (req, res) => {
   try {
@@ -705,7 +755,8 @@ router.get('/today', protect, async (req, res) => {
 
     const today = new Date();
     const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+    // Allow jobs scheduled for today and up to 2 days in the future
+    const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 3); // +3 to include the full 2 days
 
     const { status, jobType, priority } = req.query;
     
@@ -777,7 +828,7 @@ router.get('/today', protect, async (req, res) => {
 });
 
 // @route   GET /api/jobs/today-geo
-// @desc    Get today's jobs assigned to current user sorted by geographical distance
+// @desc    Get today's jobs and jobs scheduled up to 2 days in the future, sorted by geographical distance
 // @access  Private (Meter readers only)
 router.get('/today-geo', protect, async (req, res) => {
   try {
@@ -787,7 +838,8 @@ router.get('/today-geo', protect, async (req, res) => {
 
     const today = new Date();
     const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+    // Allow jobs scheduled for today and up to 2 days in the future
+    const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 3); // +3 to include the full 2 days
 
     const { status, jobType, priority, userLatitude, userLongitude } = req.query;
     
