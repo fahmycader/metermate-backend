@@ -1656,14 +1656,49 @@ router.put('/:id/complete', protect, async (req, res) => {
       'Meter damaged - requires repair first',
     ];
 
+    // Check if this is a valid no access job first
     if (validNoAccess === true && noAccessReason && validNoAccessReasons.includes(noAccessReason)) {
       // Valid no access = 0.5 points
       points = 0.5;
       isValidNoAccess = true;
-    } else if (meterReadings && (meterReadings.electric || meterReadings.gas || meterReadings.water)) {
-      // Valid job completion with meter reading = 1 point
-      points = 1;
+    } 
+    // Check if this is a successful job with meter readings
+    else {
+      // Check for meter readings in standard format (electric, gas, water)
+      let hasMeterReading = false;
+      if (meterReadings) {
+        const electric = meterReadings.electric;
+        const gas = meterReadings.gas;
+        const water = meterReadings.water;
+        
+        // Check if any reading exists (not null, not undefined, not empty string)
+        hasMeterReading = (electric != null && electric !== '' && electric !== undefined) ||
+                         (gas != null && gas !== '' && gas !== undefined) ||
+                         (water != null && water !== '' && water !== undefined);
+      }
+      
+      // Also check if register values exist (alternative format)
+      const hasRegisterValues = registerValues && Array.isArray(registerValues) && registerValues.length > 0;
+      
+      // If we have meter readings OR register values, it's a successful job
+      if (hasMeterReading || hasRegisterValues) {
+        // Valid job completion with meter reading = 1 point
+        points = 1;
+      }
     }
+    
+    // Log for debugging
+    console.log('Points calculation:', {
+      points,
+      hasMeterReadings: !!meterReadings,
+      electric: meterReadings?.electric,
+      gas: meterReadings?.gas,
+      water: meterReadings?.water,
+      registerValues: registerValues,
+      hasRegisterValues: registerValues && Array.isArray(registerValues) && registerValues.length > 0,
+      validNoAccess,
+      noAccessReason
+    });
 
     const updateData = {
       status,
@@ -1732,20 +1767,42 @@ router.put('/:id/complete', protect, async (req, res) => {
           const totalMiles = totalKm * 0.621371;
           
           // Jobs completed successfully (with meter reading)
-          const jobsWithReading = completedToday.filter(j => 
-            j.meterReadings && (j.meterReadings.electric || j.meterReadings.gas || j.meterReadings.water)
-          ).length;
+          const jobsWithReading = completedToday.filter(j => {
+            if (!j.meterReadings) return false;
+            const electric = j.meterReadings.electric;
+            const gas = j.meterReadings.gas;
+            const water = j.meterReadings.water;
+            return (electric != null && electric !== '' && electric !== undefined) ||
+                   (gas != null && gas !== '' && gas !== undefined) ||
+                   (water != null && water !== '' && water !== undefined);
+          }).length;
           
           // Valid No Access jobs completed
           const validNoAccessJobs = completedToday.filter(j => j.validNoAccess === true).length;
           
-          // Calculate points
-          const pointsFromJobs = completedToday.filter(j => 
-            j.meterReadings && (j.meterReadings.electric || j.meterReadings.gas || j.meterReadings.water)
-          ).reduce((sum, j) => sum + (j.points || 1), 0);
+          // Calculate points - use saved points from jobs, or calculate if missing
+          const pointsFromJobs = completedToday
+            .filter(j => {
+              if (j.validNoAccess === true) return false; // Exclude no access jobs
+              if (!j.meterReadings) return false;
+              const electric = j.meterReadings.electric;
+              const gas = j.meterReadings.gas;
+              const water = j.meterReadings.water;
+              return (electric != null && electric !== '' && electric !== undefined) ||
+                     (gas != null && gas !== '' && gas !== undefined) ||
+                     (water != null && water !== '' && water !== undefined);
+            })
+            .reduce((sum, j) => {
+              // Use saved points if available, otherwise default to 1
+              return sum + (j.points || 1);
+            }, 0);
           
-          const pointsFromNoAccess = completedToday.filter(j => j.validNoAccess === true)
-            .reduce((sum, j) => sum + (j.points || 0.5), 0);
+          const pointsFromNoAccess = completedToday
+            .filter(j => j.validNoAccess === true)
+            .reduce((sum, j) => {
+              // Use saved points if available, otherwise default to 0.5
+              return sum + (j.points || 0.5);
+            }, 0);
           
           const totalPoints = pointsFromJobs + pointsFromNoAccess;
           
