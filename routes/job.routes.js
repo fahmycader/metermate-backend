@@ -1768,13 +1768,22 @@ router.put('/:id/complete', protect, async (req, res) => {
           
           // Jobs completed successfully (with meter reading)
           const jobsWithReading = completedToday.filter(j => {
-            if (!j.meterReadings) return false;
-            const electric = j.meterReadings.electric;
-            const gas = j.meterReadings.gas;
-            const water = j.meterReadings.water;
-            return (electric != null && electric !== '' && electric !== undefined) ||
-                   (gas != null && gas !== '' && gas !== undefined) ||
-                   (water != null && water !== '' && water !== undefined);
+            // Check for meter readings in standard format
+            if (j.meterReadings) {
+              const electric = j.meterReadings.electric;
+              const gas = j.meterReadings.gas;
+              const water = j.meterReadings.water;
+              if ((electric != null && electric !== '' && electric !== undefined) ||
+                  (gas != null && gas !== '' && gas !== undefined) ||
+                  (water != null && water !== '' && water !== undefined)) {
+                return true;
+              }
+            }
+            // Also check for register values (alternative format)
+            if (j.registerValues && Array.isArray(j.registerValues) && j.registerValues.length > 0) {
+              return true;
+            }
+            return false;
           }).length;
           
           // Valid No Access jobs completed
@@ -1784,13 +1793,25 @@ router.put('/:id/complete', protect, async (req, res) => {
           const pointsFromJobs = completedToday
             .filter(j => {
               if (j.validNoAccess === true) return false; // Exclude no access jobs
-              if (!j.meterReadings) return false;
-              const electric = j.meterReadings.electric;
-              const gas = j.meterReadings.gas;
-              const water = j.meterReadings.water;
-              return (electric != null && electric !== '' && electric !== undefined) ||
-                     (gas != null && gas !== '' && gas !== undefined) ||
-                     (water != null && water !== '' && water !== undefined);
+              
+              // Check for meter readings in standard format
+              if (j.meterReadings) {
+                const electric = j.meterReadings.electric;
+                const gas = j.meterReadings.gas;
+                const water = j.meterReadings.water;
+                if ((electric != null && electric !== '' && electric !== undefined) ||
+                    (gas != null && gas !== '' && gas !== undefined) ||
+                    (water != null && water !== '' && water !== undefined)) {
+                  return true;
+                }
+              }
+              
+              // Also check for register values (alternative format)
+              if (j.registerValues && Array.isArray(j.registerValues) && j.registerValues.length > 0) {
+                return true;
+              }
+              
+              return false;
             })
             .reduce((sum, j) => {
               // Use saved points if available, otherwise default to 1
