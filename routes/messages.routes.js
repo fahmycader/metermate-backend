@@ -91,6 +91,69 @@ router.put('/:id/star', protect, async (req, res) => {
   }
 });
 
+// Operative: Poke admin (notify admin that operative needs attention)
+router.post('/poke', protect, async (req, res) => {
+  try {
+    if (req.user.role !== 'meter_reader') {
+      return res.status(403).json({ success: false, message: 'Access denied. Meter readers only.' });
+    }
+
+    // Get all admin users
+    const User = require('../models/user.model');
+    const admins = await User.find({ role: 'admin', isActive: true }).select('_id firstName lastName');
+
+    if (admins.length === 0) {
+      return res.status(404).json({ success: false, message: 'No admin users found' });
+    }
+
+    // Create a message for each admin
+    const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.username;
+    const title = 'Poke Notification';
+    const body = `${userName} (${req.user.employeeId || 'N/A'}) needs your attention. Please check in with them.`;
+
+    const messages = [];
+    for (const admin of admins) {
+      const msg = await Message.create({
+        recipient: admin._id,
+        title,
+        body,
+        meta: {
+          type: 'poke',
+          fromUser: req.user._id,
+          fromUserName: userName,
+          fromEmployeeId: req.user.employeeId,
+          timestamp: new Date(),
+        },
+      });
+      messages.push(msg);
+
+      // Notify admin via WebSocket
+      if (global.io) {
+        global.io.to(`user_${admin._id}`).emit('message', {
+          type: 'new_message',
+          message: msg,
+        });
+        global.io.to('admin_room').emit('pokeNotification', {
+          type: 'poke',
+          fromUser: req.user._id,
+          fromUserName: userName,
+          fromEmployeeId: req.user.employeeId,
+          timestamp: new Date(),
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Admin has been notified',
+      data: { messagesSent: messages.length },
+    });
+  } catch (e) {
+    console.error('Poke admin error:', e);
+    res.status(500).json({ success: false, message: 'Server Error', error: e.message });
+  }
+});
+
 // Admin: delete message (admin can delete any message)
 router.delete('/admin/:id', protect, async (req, res) => {
   try {

@@ -1732,8 +1732,9 @@ router.put('/:id/complete', protect, async (req, res) => {
     ];
 
     // Check if this is a valid no access job first
-    if (validNoAccess === true && noAccessReason && validNoAccessReasons.includes(noAccessReason)) {
-      // Valid no access = 0.5 points
+    // If validNoAccess is true, always award 0.5 points regardless of reason
+    if (validNoAccess === true) {
+      // Valid no access = 0.5 points (always, regardless of reason)
       points = 0.5;
       isValidNoAccess = true;
     } 
@@ -1804,6 +1805,29 @@ router.put('/:id/complete', protect, async (req, res) => {
     )
       .populate('assignedTo', 'firstName lastName username employeeId department')
       .populate('house', 'address postcode city county latitude longitude meterType');
+
+    // Update user's jobsCompleted count and weekly performance
+    if (status === 'completed' && job.status !== 'completed') {
+      const User = require('../models/user.model');
+      const assignedUser = await User.findById(job.assignedTo);
+      if (assignedUser) {
+        // Increment jobs completed
+        assignedUser.jobsCompleted = (assignedUser.jobsCompleted || 0) + 1;
+        
+        // Calculate weekly performance (completion rate for last 7 days)
+        const weekAgo = new Date();
+        weekAgo.setDate(weekAgo.getDate() - 7);
+        const weekJobs = await Job.find({
+          assignedTo: assignedUser._id,
+          scheduledDate: { $gte: weekAgo }
+        });
+        const weekCompleted = weekJobs.filter(j => j.status === 'completed').length;
+        const weekTotal = weekJobs.length;
+        assignedUser.weeklyPerformance = weekTotal > 0 ? Math.round((weekCompleted / weekTotal) * 100) : 0;
+        
+        await assignedUser.save();
+      }
+    }
 
     // Emit WebSocket events for real-time updates
     if (global.io) {
@@ -1912,9 +1936,9 @@ router.put('/:id/complete', protect, async (req, res) => {
             `📊 Mileage: ${totalMiles.toFixed(2)} miles\n` +
             `✅ Jobs Completed: ${jobsWithReading} (with meter reading)\n` +
             `🚫 Valid No Access: ${validNoAccessJobs}\n` +
-            `⭐ Points from Jobs: ${pointsFromJobs}\n` +
-            `⭐ Points from No Access: ${pointsFromNoAccess}\n` +
-            `🎯 Total Points: ${totalPoints}\n` +
+            `⭐ Points from Completed Jobs: ${pointsFromJobs}\n` +
+            `⭐ Points from Valid No Access: ${pointsFromNoAccess}\n` +
+            `🎯 Total Points Earned: ${totalPoints}\n` +
             `💰 Mileage Payment: £${mileagePayment.toFixed(2)}`;
           
           const Message = require('../models/message.model');
