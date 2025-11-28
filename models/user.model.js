@@ -68,6 +68,25 @@ const userSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  // Current location tracking
+  currentLocation: {
+    latitude: {
+      type: Number,
+      default: null,
+    },
+    longitude: {
+      type: Number,
+      default: null,
+    },
+    timestamp: {
+      type: Date,
+      default: null,
+    },
+    accuracy: {
+      type: Number,
+      default: null,
+    },
+  },
 }, {
   timestamps: true,
 });

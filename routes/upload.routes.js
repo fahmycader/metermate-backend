@@ -73,19 +73,36 @@ router.post('/meter-photo', protect, upload.single('photo'), async (req, res) =>
 
 // @route   GET /api/upload/meter-photos/:filename
 // @desc    Serve meter photos
-// @access  Private
+// @access  Private (but allow CORS for images)
 router.get('/meter-photos/:filename', protect, (req, res) => {
   try {
     const filename = req.params.filename;
-    const filePath = path.join(__dirname, '../uploads/meter-photos', filename);
+    // Handle both direct filename and path with filename
+    const cleanFilename = filename.includes('/') ? filename.split('/').pop() : filename;
+    const filePath = path.join(__dirname, '../uploads/meter-photos', cleanFilename);
+    
+    console.log('Serving photo:', { filename, cleanFilename, filePath, exists: fs.existsSync(filePath) });
     
     // Check if file exists
     if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ message: 'Photo not found' });
+      console.error('Photo not found at path:', filePath);
+      return res.status(404).json({ message: 'Photo not found', path: filePath });
     }
 
+    // Determine content type based on file extension
+    const ext = path.extname(cleanFilename).toLowerCase();
+    let contentType = 'image/jpeg'; // default
+    if (ext === '.png') contentType = 'image/png';
+    else if (ext === '.gif') contentType = 'image/gif';
+    else if (ext === '.webp') contentType = 'image/webp';
+
+    // Set appropriate headers for image
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache for 1 year
+    res.setHeader('Access-Control-Allow-Origin', '*'); // Allow CORS for images
+    
     // Send file
-    res.sendFile(filePath);
+    res.sendFile(path.resolve(filePath));
   } catch (error) {
     console.error('Serve photo error:', error);
     res.status(500).json({ message: 'Server Error', error: error.message });

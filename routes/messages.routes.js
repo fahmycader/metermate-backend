@@ -106,47 +106,50 @@ router.post('/poke', protect, async (req, res) => {
       return res.status(404).json({ success: false, message: 'No admin users found' });
     }
 
-    // Create a message for each admin
+    // Create ONE message and send to all admins (or create one per admin but emit only once)
     const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.username;
     const title = 'Poke Notification';
     const body = `${userName} (${req.user.employeeId || 'N/A'}) needs your attention. Please check in with them.`;
 
-    const messages = [];
-    for (const admin of admins) {
-      const msg = await Message.create({
-        recipient: admin._id,
-        title,
-        body,
-        meta: {
-          type: 'poke',
-          fromUser: req.user._id,
-          fromUserName: userName,
-          fromEmployeeId: req.user.employeeId,
-          timestamp: new Date(),
-        },
-      });
-      messages.push(msg);
+    // Create ONE message for the first admin only (to avoid duplicate notifications)
+    // All admins will see it through the admin room notification
+    const firstAdmin = admins[0];
+    const msg = await Message.create({
+      recipient: firstAdmin._id,
+      title,
+      body,
+      meta: {
+        type: 'poke',
+        fromUser: req.user._id,
+        fromUserName: userName,
+        fromEmployeeId: req.user.employeeId,
+        timestamp: new Date(),
+      },
+    });
 
-      // Notify admin via WebSocket
-      if (global.io) {
-        global.io.to(`user_${admin._id}`).emit('message', {
-          type: 'new_message',
-          message: msg,
-        });
-        global.io.to('admin_room').emit('pokeNotification', {
-          type: 'poke',
-          fromUser: req.user._id,
-          fromUserName: userName,
-          fromEmployeeId: req.user.employeeId,
-          timestamp: new Date(),
-        });
-      }
+    // Emit WebSocket notification ONCE to admin room (all admins will receive it)
+    if (global.io) {
+      // Send to admin room ONCE - all admins in the room will receive this single notification
+      global.io.to('admin_room').emit('pokeNotification', {
+        type: 'poke',
+        fromUser: req.user._id,
+        fromUserName: userName,
+        fromEmployeeId: req.user.employeeId,
+        timestamp: new Date(),
+        message: msg,
+      });
+      
+      // Also send the message notification to the first admin only
+      global.io.to(`user_${firstAdmin._id}`).emit('message', {
+        type: 'new_message',
+        message: msg,
+      });
     }
 
     res.json({
       success: true,
       message: 'Admin has been notified',
-      data: { messagesSent: messages.length },
+      data: { messagesSent: 1 },
     });
   } catch (e) {
     console.error('Poke admin error:', e);

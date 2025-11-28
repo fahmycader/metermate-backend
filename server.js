@@ -11,6 +11,7 @@ const houseRoutes = require('./routes/houses.routes');
 const uploadRoutes = require('./routes/upload.routes');
 const meterReadingRoutes = require('./routes/meterReading.routes');
 const messageRoutes = require('./routes/messages.routes');
+const vehicleCheckRoutes = require('./routes/vehicleCheck.routes');
 require('./db'); 
 
 // Set JWT_SECRET in environment variables for jwt.sign
@@ -19,8 +20,17 @@ process.env.JWT_SECRET = JWT_SECRET;
 const app = express();
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:3000', 'http://192.168.1.99:3000', 'http://localhost:3001', 'http://127.0.0.1:3000'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
+
+// Serve static files from uploads directory
+const path = require('path');
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Routes
 app.use('/api/auth', userRoutes);      // Auth routes (login, register, profile)
@@ -30,9 +40,15 @@ app.use('/api/houses', houseRoutes);
 app.use('/api/upload', uploadRoutes);   // File upload routes
 app.use('/api/meter-readings', meterReadingRoutes); // Meter reading routes
 app.use('/api/messages', messageRoutes);
+app.use('/api/vehicle-checks', vehicleCheckRoutes); // Vehicle check routes
 
 app.get('/', (req, res) => {
     res.send('MeterMate Backend is running!');
+});
+
+// Health check endpoint for connectivity testing
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 const servicePort = process.env.PORT || PORT || 5000;
@@ -41,8 +57,8 @@ const server = http.createServer(app);
 // Initialize Socket.IO
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:3000", "http://192.168.1.99:3000"],
-    methods: ["GET", "POST"],
+    origin: ["http://localhost:3000", "http://192.168.1.99:3000", "http://localhost:3001"],
+    methods: ["GET", "POST", "PUT", "DELETE"],
     credentials: true
   }
 });
@@ -84,9 +100,12 @@ io.on('connection', (socket) => {
 // Make io available globally for emitting events
 global.io = io;
 
-server.listen(servicePort, BACKEND_IP, () => {
-  console.log(`Server running on ${BACKEND_IP}:${servicePort}`);
+// Listen on 0.0.0.0 to accept connections from any network interface
+server.listen(servicePort, '0.0.0.0', () => {
+  console.log(`Server running on 0.0.0.0:${servicePort}`);
   console.log(`Access the API at: ${BASE_URL}`);
+  console.log(`Local access: http://localhost:${servicePort}`);
+  console.log(`Network access: http://${BACKEND_IP}:${servicePort}`);
   console.log(`WebSocket server running on ws://${BACKEND_IP}:${servicePort}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });

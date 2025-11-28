@@ -150,14 +150,16 @@ router.get('/:id/progress', protect, async (req, res) => {
     const start = startDate ? new Date(startDate) : new Date();
     start.setDate(start.getDate() - 7); // Default to 7 days ago
 
-    // Get all jobs assigned to this user in the date range
+    // Get all jobs assigned to this user in the date range, including location data
     const allJobs = await Job.find({
       assignedTo: userId,
       scheduledDate: {
         $gte: start,
         $lte: end
       }
-    });
+    })
+    .select('status startLocation endLocation location address house scheduledDate completedDate jobId sequenceNumber')
+    .populate('house', 'latitude longitude address postcode city');
 
     // Calculate statistics
     const totalJobs = allJobs.length;
@@ -212,6 +214,7 @@ router.get('/:id/progress', protect, async (req, res) => {
         employeeId: user.employeeId,
         email: user.email,
         phone: user.phone,
+        currentLocation: user.currentLocation || null,
       },
       statistics: {
         totalJobs,
@@ -229,10 +232,202 @@ router.get('/:id/progress', protect, async (req, res) => {
       dateRange: {
         start: start.toISOString().split('T')[0],
         end: end.toISOString().split('T')[0],
-      }
+      },
+      // Include job locations for map visualization
+      jobLocations: allJobs.map(job => ({
+        jobId: job.jobId || job._id.toString(),
+        sequenceNumber: job.sequenceNumber,
+        status: job.status,
+        scheduledDate: job.scheduledDate,
+        completedDate: job.completedDate,
+        // Job address location (try multiple sources)
+        jobLocation: (() => {
+          if (job.address?.latitude && job.address?.longitude) {
+            return {
+              latitude: job.address.latitude,
+              longitude: job.address.longitude,
+              source: 'address'
+            };
+          }
+          if (job.house && typeof job.house === 'object' && job.house.latitude && job.house.longitude) {
+            return {
+              latitude: job.house.latitude,
+              longitude: job.house.longitude,
+              source: 'house'
+            };
+          }
+          if (job.location?.latitude && job.location?.longitude) {
+            return {
+              latitude: job.location.latitude,
+              longitude: job.location.longitude,
+              source: 'location'
+            };
+          }
+          return null;
+        })(),
+        // Start location
+        startLocation: job.startLocation ? {
+          latitude: job.startLocation.latitude,
+          longitude: job.startLocation.longitude,
+          timestamp: job.startLocation.timestamp
+        } : null,
+        // End/completion location
+        endLocation: job.endLocation ? {
+          latitude: job.endLocation.latitude,
+          longitude: job.endLocation.longitude,
+          timestamp: job.endLocation.timestamp
+        } : null,
+      })).filter(j => j.jobLocation || j.startLocation || j.endLocation) // Only include jobs with location data
     });
   } catch (error) {
     console.error('Get user progress error:', error);
+    res.status(500).json({ message: 'Server Error', error: error.message });
+  }
+});
+
+// @route   PUT /api/users/me/location
+// @desc    Update current location of the logged-in user
+// @access  Private
+router.put('/me/location', protect, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { latitude, longitude, accuracy } = req.body;
+
+    if (latitude == null || longitude == null) {
+      return res.status(400).json({ message: 'Latitude and longitude are required' });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      userId,
+      {
+        currentLocation: {
+          latitude: parseFloat(latitude),
+          longitude: parseFloat(longitude),
+          timestamp: new Date(),
+          accuracy: accuracy ? parseFloat(accuracy) : null,
+        }
+      },
+      { new: true }
+    ).select('-password');
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Emit WebSocket event for real-time location updates
+    if (global.io) {
+      global.io.to('admin_room').emit('operativeLocationUpdate', {
+        type: 'location_updated',
+        userId: user._id,
+        location: user.currentLocation,
+        user: {
+          _id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          employeeId: user.employeeId,
+        }
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Location updated successfully',
+      location: user.currentLocation
+    });
+  } catch (error) {
+    console.error('Update location error:', error);
+    res.status(500).json({ message: 'Server Error', error: error.message });
+  }
+});
+
+// @route   PUT /api/users/:id/location
+// @desc    Update current location of an operative (admin can update any)
+// @access  Private (Admin only)
+router.put('/:id/location', protect, async (req, res) => {
+  try {
+    const userId = req.params.id;
+    
+    // Only admin can update other users' locations
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied. Admin only.' });
+    }
+
+    const { latitude, longitude, accuracy } = req.body;
+
+    if (latitude == null || longitude == null) {
+      return res.status(400).json({ message: 'Latitude and longitude are required' });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      userId,
+      {
+        currentLocation: {
+          latitude: parseFloat(latitude),
+          longitude: parseFloat(longitude),
+          timestamp: new Date(),
+          accuracy: accuracy ? parseFloat(accuracy) : null,
+        }
+      },
+      { new: true }
+    ).select('-password');
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Emit WebSocket event for real-time location updates
+    if (global.io) {
+      global.io.to('admin_room').emit('operativeLocationUpdate', {
+        type: 'location_updated',
+        userId: user._id,
+        location: user.currentLocation,
+        user: {
+          _id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          employeeId: user.employeeId,
+        }
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Location updated successfully',
+      location: user.currentLocation
+    });
+  } catch (error) {
+    console.error('Update location error:', error);
+    res.status(500).json({ message: 'Server Error', error: error.message });
+  }
+});
+
+// @route   GET /api/users/:id/location
+// @desc    Get current location of an operative
+// @access  Private (Admin only)
+router.get('/:id/location', protect, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied. Admin only.' });
+    }
+
+    const user = await User.findById(req.params.id).select('currentLocation firstName lastName employeeId');
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({
+      success: true,
+      user: {
+        _id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        employeeId: user.employeeId,
+        currentLocation: user.currentLocation || null,
+      }
+    });
+  } catch (error) {
+    console.error('Get location error:', error);
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
 });

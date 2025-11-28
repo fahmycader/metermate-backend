@@ -94,6 +94,11 @@ const jobSchema = new mongoose.Schema({
     trim: true,
     default: '',
   },
+  customerRead: {
+    type: String,
+    trim: true,
+    default: '',
+  },
   meterMake: {
     type: String,
     trim: true,
