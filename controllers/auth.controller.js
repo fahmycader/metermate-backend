@@ -84,12 +84,10 @@ exports.loginUser = async (req, res) => {
         return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    if (!user.isActive) {
-        return res.status(403).json({ message: 'User account is deactivated' });
-    }
-
-    // Update last login
-    await user.updateLastLogin();
+    // Update last login and set isActive to true when operative logs in
+    user.lastLogin = new Date();
+    user.isActive = true; // Set active when they log in
+    await user.save();
 
     res.json({
       _id: user._id,
