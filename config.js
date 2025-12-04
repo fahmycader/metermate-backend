@@ -33,12 +33,12 @@ class ConfigService {
       this.config = {
         development: {
           backend: {
-            ip: process.env.BACKEND_IP || '127.0.0.1',
+            ip: process.env.BACKEND_IP || '192.168.1.99',
             port: process.env.BACKEND_PORT ? Number(process.env.BACKEND_PORT) : 3001,
-            baseUrl: process.env.BASE_URL || `http://${process.env.BACKEND_IP || '127.0.0.1'}:${process.env.BACKEND_PORT || 3001}`
+            baseUrl: process.env.BASE_URL || `http://${process.env.BACKEND_IP || '192.168.1.99'}:${process.env.BACKEND_PORT || 3001}`
           },
           database: {
-            mongodb: process.env.MONGO_URI || 'mongodb://localhost:27017/metermate'
+            mongodb: process.env.MONGO_URI || 'mongodb+srv://mail2fahmy:0eFaerZ68FMAgkO2@cluster0.gkwxq63.mongodb.net/metermate?retryWrites=true&w=majority&appName=Cluster0'
           },
           jwt: {
             secret: process.env.JWT_SECRET || 'change-me-to-a-secure-secret'
@@ -65,7 +65,7 @@ class ConfigService {
   }
 
   static get mongoUri() {
-    return this.config?.[this.environment]?.database?.mongodb || 'mongodb+srv://mail2fahmy:0eFaerZ68FMAgkO2@cluster0.gkwxq63.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
+    return this.config?.[this.environment]?.database?.mongodb || 'mongodb+srv://mail2fahmy:0eFaerZ68FMAgkO2@cluster0.gkwxq63.mongodb.net/metermate?retryWrites=true&w=majority&appName=Cluster0';
   }
 
   static get jwtSecret() {

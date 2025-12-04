@@ -32,7 +32,9 @@ router.get('/', protect, async (req, res) => {
 // @access  Private (All authenticated users)
 router.get('/meter', protect, async (req, res) => {
   try {
+    console.log('GET /api/users/meter - Request received');
     const users = await User.find({ department: 'meter' }).select('-password');
+    console.log(`GET /api/users/meter - Found ${users.length} meter users`);
 
     res.json({ 
       users,

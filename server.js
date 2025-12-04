@@ -3,6 +3,7 @@ const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
+const mongoose = require('./db');
 const { PORT, JWT_SECRET, BACKEND_IP, BASE_URL } = require('./config');
 const userRoutes = require('./routes/user.routes');
 const usersRoutes = require('./routes/users.routes');
@@ -11,8 +12,7 @@ const houseRoutes = require('./routes/houses.routes');
 const uploadRoutes = require('./routes/upload.routes');
 const meterReadingRoutes = require('./routes/meterReading.routes');
 const messageRoutes = require('./routes/messages.routes');
-const vehicleCheckRoutes = require('./routes/vehicleCheck.routes');
-require('./db'); 
+const vehicleCheckRoutes = require('./routes/vehicleCheck.routes'); 
 
 // Set JWT_SECRET in environment variables for jwt.sign
 process.env.JWT_SECRET = JWT_SECRET;
@@ -21,7 +21,7 @@ const app = express();
 
 // Middleware
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://192.168.1.99:3000', 'http://localhost:3001', 'http://127.0.0.1:3000'],
+  origin: ['http://localhost:3000', 'http://localhost:3001', 'http://192.168.1.99:3001', 'http://127.0.0.1:3001'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -33,8 +33,11 @@ const path = require('path');
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Routes
+console.log('Registering routes...');
 app.use('/api/auth', userRoutes);      // Auth routes (login, register, profile)
+console.log('Auth routes registered at /api/auth');
 app.use('/api/users', usersRoutes);    // User management routes
+console.log('Users routes registered at /api/users (includes /api/users/meter)');
 app.use('/api/jobs', jobRoutes);
 app.use('/api/houses', houseRoutes);
 app.use('/api/upload', uploadRoutes);   // File upload routes
@@ -48,16 +51,58 @@ app.get('/', (req, res) => {
 
 // Health check endpoint for connectivity testing
 app.get('/health', (req, res) => {
-    res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+    const dbState = mongoose.connection.readyState;
+    const dbStatus = dbState === 1 ? 'connected' : dbState === 2 ? 'connecting' : 'disconnected';
+    res.status(200).json({ 
+        status: 'ok', 
+        timestamp: new Date().toISOString(),
+        database: dbStatus,
+        databaseName: mongoose.connection.db?.databaseName || 'unknown',
+        databaseState: dbState, // 0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting
+        backend: {
+            ip: BACKEND_IP,
+            port: PORT,
+            baseUrl: BASE_URL
+        }
+    });
 });
 
-const servicePort = process.env.PORT || PORT || 5000;
+// Debug route to test API routing
+app.get('/api/test', (req, res) => {
+    res.status(200).json({ message: 'API routes are working', routes: ['/api/auth/login', '/api/auth/register'] });
+});
+
+// Debug: Log all incoming requests (placed after routes to see what's being requested)
+app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+    next();
+});
+
+// 404 handler for unmatched routes
+app.use((req, res) => {
+    console.log(`❌ 404 - Route not found: ${req.method} ${req.path}`);
+    res.status(404).json({ 
+        error: 'Route not found', 
+        method: req.method, 
+        path: req.path,
+        message: `The route ${req.method} ${req.path} was not found on this server.`,
+        availableRoutes: [
+            'POST /api/auth/login',
+            'POST /api/auth/register',
+            'GET /api/auth/profile',
+            'GET /health',
+            'GET /api/test'
+        ]
+    });
+});
+
+const servicePort = process.env.PORT || PORT || 3001;
 const server = http.createServer(app);
 
 // Initialize Socket.IO
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:3000", "http://192.168.1.99:3000", "http://localhost:3001"],
+    origin: ["http://localhost:3000", "http://localhost:3001", "http://192.168.1.99:3001", "http://127.0.0.1:3001"],
     methods: ["GET", "POST", "PUT", "DELETE"],
     credentials: true
   }
@@ -108,6 +153,17 @@ server.listen(servicePort, '0.0.0.0', () => {
   console.log(`Network access: http://${BACKEND_IP}:${servicePort}`);
   console.log(`WebSocket server running on ws://${BACKEND_IP}:${servicePort}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+}).on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`❌ Port ${servicePort} is already in use!`);
+    console.error(`   Another process is using port ${servicePort}.`);
+    console.error(`   To fix this, run: lsof -ti:${servicePort} | xargs kill -9`);
+    console.error(`   Or find the process using: lsof -i:${servicePort}`);
+    process.exit(1);
+  } else {
+    console.error('❌ Server error:', err);
+    process.exit(1);
+  }
 });
 
 // Keep the server running
