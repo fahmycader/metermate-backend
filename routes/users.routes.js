@@ -204,6 +204,62 @@ router.get('/:id/progress', protect, async (req, res) => {
       .reduce((sum, j) => sum + (j.distanceTraveled || 0), 0);
     const totalDistanceMiles = totalDistanceKm * 0.621371;
 
+    // Calculate work hours for today
+    const VehicleCheck = require('../models/vehicleCheck.model');
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    // Get today's vehicle check (start time)
+    const todayVehicleCheck = await VehicleCheck.findOne({
+      operative: userId,
+      checkDate: {
+        $gte: today,
+        $lt: tomorrow
+      }
+    }).sort({ checkDate: -1 });
+
+    // Get last completed job for today (end time)
+    const lastCompletedJob = await Job.findOne({
+      assignedTo: userId,
+      status: 'completed',
+      completedDate: {
+        $gte: today,
+        $lt: tomorrow
+      }
+    }).sort({ completedDate: -1 });
+
+    // Calculate work hours
+    let workHours = null;
+    let startTime = null;
+    let endTime = null;
+    let totalHours = null;
+
+    if (todayVehicleCheck && todayVehicleCheck.shiftStartTime) {
+      startTime = todayVehicleCheck.shiftStartTime;
+      
+      if (lastCompletedJob && lastCompletedJob.completedDate) {
+        endTime = lastCompletedJob.completedDate;
+        const diffMs = endTime - startTime;
+        const diffHours = diffMs / (1000 * 60 * 60);
+        totalHours = Math.round(diffHours * 100) / 100; // Round to 2 decimal places
+      } else {
+        // Shift started but no jobs completed yet
+        const now = new Date();
+        const diffMs = now - startTime;
+        const diffHours = diffMs / (1000 * 60 * 60);
+        totalHours = Math.round(diffHours * 100) / 100;
+      }
+
+      workHours = {
+        startTime: startTime,
+        endTime: endTime,
+        totalHours: totalHours,
+        isActive: !endTime // If no end time, shift is still active
+      };
+    }
+
     res.json({
       success: true,
       user: {
@@ -233,6 +289,7 @@ router.get('/:id/progress', protect, async (req, res) => {
         start: start.toISOString().split('T')[0],
         end: end.toISOString().split('T')[0],
       },
+      workHours: workHours, // Today's work hours (start time, end time, total hours)
       // Include job locations for map visualization
       jobLocations: allJobs.map(job => ({
         jobId: job.jobId || job._id.toString(),

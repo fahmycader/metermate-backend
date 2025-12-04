@@ -1,6 +1,31 @@
 const User = require('../models/user.model');
 const jwt = require('jsonwebtoken');
 
+// Password validation function
+const validatePassword = (password) => {
+  if (!password || password.length < 6 || password.length > 10) {
+    return 'Password must be between 6 and 10 characters';
+  }
+  
+  if (!/[A-Z]/.test(password)) {
+    return 'Password must contain at least one uppercase letter';
+  }
+  
+  if (!/[a-z]/.test(password)) {
+    return 'Password must contain at least one lowercase letter';
+  }
+  
+  if (!/[0-9]/.test(password)) {
+    return 'Password must contain at least one number';
+  }
+  
+  if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) {
+    return 'Password must contain at least one symbol';
+  }
+  
+  return null;
+};
+
 // @desc    Register a new user
 // @route   POST /api/users/reg
 // @access  Public
@@ -10,6 +35,12 @@ exports.registerUser = async (req, res) => {
 
     if (!username || !password) {
         return res.status(400).json({ message: 'Please provide username and password' });
+    }
+
+    // Validate password strength
+    const passwordError = validatePassword(password);
+    if (passwordError) {
+      return res.status(400).json({ message: passwordError });
     }
 
     const userExists = await User.findOne({ username });
