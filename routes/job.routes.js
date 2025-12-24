@@ -215,13 +215,13 @@ router.get('/', protect, async (req, res) => {
           .filter((url) => url && url.trim() !== '');
       }
       
-      // Debug logging for photos
-      if (jobObj.photos && jobObj.photos.length > 0) {
-        console.log(`Job ${jobObj._id} has ${jobObj.photos.length} photos:`, jobObj.photos);
-      }
-      if (jobObj.meterPhotos && jobObj.meterPhotos.length > 0) {
-        console.log(`Job ${jobObj._id} has ${jobObj.meterPhotos.length} meterPhotos:`, jobObj.meterPhotos);
-      }
+      // Debug logging for photos - always log to help debugging
+      console.log(`📸 Job ${jobObj._id} photos status:`, {
+        photosCount: jobObj.photos?.length || 0,
+        meterPhotosCount: jobObj.meterPhotos?.length || 0,
+        photos: jobObj.photos || [],
+        meterPhotos: jobObj.meterPhotos?.map(mp => mp.photoUrl) || []
+      });
       
       return jobObj;
     });
@@ -282,29 +282,94 @@ router.post('/', protect, async (req, res) => {
       jobData.employeeId = assignedUser.employeeId;
     }
     
+    // Validate required address fields
+    if (!jobData.address) {
+      return res.status(400).json({ 
+        message: 'Address information is required' 
+      });
+    }
+    
+    if (!jobData.address.street || !jobData.address.street.trim()) {
+      return res.status(400).json({ 
+        message: 'Street address is required' 
+      });
+    }
+    
+    if (!jobData.address.city || !jobData.address.city.trim()) {
+      return res.status(400).json({ 
+        message: 'City is required' 
+      });
+    }
+    
+    if (!jobData.address.state || !jobData.address.state.trim()) {
+      return res.status(400).json({ 
+        message: 'State/County is required' 
+      });
+    }
+    
+    if (!jobData.address.zipCode || !jobData.address.zipCode.trim()) {
+      return res.status(400).json({ 
+        message: 'Zip code/Postcode is required' 
+      });
+    }
+    
+    // Set default country if not provided
+    if (!jobData.address.country) {
+      jobData.address.country = 'UK';
+    }
+    
     // Validate scheduled date - must be today or up to 2 days in the future
-    if (jobData.scheduledDate) {
-      const scheduledDate = new Date(jobData.scheduledDate);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0); // Start of today
-      const maxFutureDate = new Date(today);
-      maxFutureDate.setDate(maxFutureDate.getDate() + 2); // 2 days from today
-      maxFutureDate.setHours(23, 59, 59, 999); // End of the 2nd day
-      
-      const scheduledDateOnly = new Date(scheduledDate);
-      scheduledDateOnly.setHours(0, 0, 0, 0);
-      
-      if (scheduledDateOnly < today) {
-        return res.status(400).json({ 
-          message: 'Scheduled date cannot be in the past. Please select today or a future date (max 2 days).' 
-        });
+    if (!jobData.scheduledDate) {
+      return res.status(400).json({ 
+        message: 'Scheduled date is required' 
+      });
+    }
+    
+    // Handle different date formats
+    let scheduledDate;
+    if (typeof jobData.scheduledDate === 'string') {
+      // Handle DD/MM/YYYY format
+      if (jobData.scheduledDate.includes('/')) {
+        const parts = jobData.scheduledDate.split('/');
+        if (parts.length === 3) {
+          scheduledDate = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+        } else {
+          scheduledDate = new Date(jobData.scheduledDate);
+        }
+      } else {
+        scheduledDate = new Date(jobData.scheduledDate);
       }
-      
-      if (scheduledDateOnly > maxFutureDate) {
-        return res.status(400).json({ 
-          message: 'Scheduled date cannot be more than 2 days in the future.' 
-        });
-      }
+    } else {
+      scheduledDate = new Date(jobData.scheduledDate);
+    }
+    
+    if (isNaN(scheduledDate.getTime())) {
+      return res.status(400).json({ 
+        message: 'Invalid scheduled date format' 
+      });
+    }
+    
+    jobData.scheduledDate = scheduledDate;
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Start of today
+    const maxFutureDate = new Date(today);
+    maxFutureDate.setDate(maxFutureDate.getDate() + 2); // 2 days from today
+    maxFutureDate.setHours(23, 59, 59, 999); // End of the 2nd day
+    
+    const scheduledDateOnly = new Date(scheduledDate);
+    scheduledDateOnly.setHours(0, 0, 0, 0);
+    
+    if (scheduledDateOnly < today) {
+      return res.status(400).json({ 
+        message: 'Scheduled date cannot be in the past. Please select today or a future date (max 2 days).' 
+      });
+    }
+    
+    if (scheduledDateOnly > maxFutureDate) {
+      return res.status(400).json({ 
+        message: 'Scheduled date cannot be more than 2 days in the future.' 
+      });
     }
     
     // Generate meaningful JobID
@@ -364,7 +429,31 @@ router.post('/', protect, async (req, res) => {
     }
   } catch (error) {
     console.error('Create job error:', error);
-    res.status(500).json({ message: 'Server Error', error: error.message });
+    
+    // Handle Mongoose validation errors
+    if (error.name === 'ValidationError') {
+      const errors = Object.values(error.errors).map((err) => err.message);
+      return res.status(400).json({ 
+        message: 'Validation Error', 
+        errors: errors,
+        error: errors.join(', ')
+      });
+    }
+    
+    // Handle duplicate key errors
+    if (error.code === 11000) {
+      return res.status(400).json({ 
+        message: 'Duplicate entry. A job with this ID already exists.',
+        error: error.message
+      });
+    }
+    
+    // Handle other errors
+    res.status(500).json({ 
+      message: 'Server Error', 
+      error: error.message || 'An unexpected error occurred',
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
@@ -1631,6 +1720,9 @@ router.get('/mileage-report', protect, async (req, res) => {
           totalDistance: 0,
           totalJobs: 0,
           completedJobs: 0,
+          totalBonus: 0, // Total bonus earned (from job.award field)
+          jobsWithReading: 0, // Jobs with successful reading
+          validNoAccessJobs: 0, // Jobs with valid no access
           jobs: []
         });
       }
@@ -1644,6 +1736,47 @@ router.get('/mileage-report', protect, async (req, res) => {
         // Add distance if job has distance data
         if (job.distanceTraveled && job.distanceTraveled > 0) {
           userData.totalDistance += job.distanceTraveled;
+        }
+        
+        // Add bonus amount from job.award field (stored when job is completed)
+        if (job.award && job.award > 0) {
+          userData.totalBonus += job.award;
+        }
+        
+        // Count jobs with reading (successful readings)
+        const hasReg1 = (() => {
+          if (job.registerValues && Array.isArray(job.registerValues) && job.registerValues.length > 0) {
+            const firstRegValue = job.registerValues[0];
+            if (firstRegValue != null && firstRegValue !== '' && firstRegValue !== undefined && firstRegValue !== 0) {
+              return true;
+            }
+          }
+          if (job.registerIds && Array.isArray(job.registerIds) && job.registerIds.length > 0) {
+            const firstRegId = job.registerIds[0];
+            if (firstRegId != null && firstRegId !== '' && firstRegId !== undefined) {
+              return true;
+            }
+          }
+          if (job.meterReadings) {
+            const electric = job.meterReadings.electric;
+            const gas = job.meterReadings.gas;
+            const water = job.meterReadings.water;
+            if ((electric != null && electric !== '' && electric !== undefined) ||
+                (gas != null && gas !== '' && gas !== undefined) ||
+                (water != null && water !== '' && water !== undefined)) {
+              return true;
+            }
+          }
+          return false;
+        })();
+        
+        if (hasReg1) {
+          userData.jobsWithReading += 1;
+        }
+        
+        // Count valid no access jobs
+        if (job.validNoAccess === true) {
+          userData.validNoAccessJobs += 1;
         }
       }
       
@@ -1664,6 +1797,9 @@ router.get('/mileage-report', protect, async (req, res) => {
         totalDistanceKm: data.totalDistance, // Keep original in km
         totalDistanceMiles: totalMiles, // Add miles
         mileagePayment: mileagePayment, // Add payment
+        totalBonus: data.totalBonus || 0, // Total bonus earned (from job.award field)
+        jobsWithReading: data.jobsWithReading || 0, // Jobs with successful reading
+        validNoAccessJobs: data.validNoAccessJobs || 0, // Valid no access jobs
         averageDistancePerJob: data.completedJobs > 0 && data.totalDistance > 0 ? data.totalDistance / data.completedJobs : 0
       };
     });
@@ -1672,6 +1808,9 @@ router.get('/mileage-report', protect, async (req, res) => {
     const totalDistanceKm = mileageData.reduce((sum, data) => sum + data.totalDistanceKm, 0);
     const totalDistanceMiles = mileageData.reduce((sum, data) => sum + data.totalDistanceMiles, 0);
     const totalMileagePayment = mileageData.reduce((sum, data) => sum + data.mileagePayment, 0);
+    const totalBonus = mileageData.reduce((sum, data) => sum + (data.totalBonus || 0), 0);
+    const totalJobsWithReading = mileageData.reduce((sum, data) => sum + (data.jobsWithReading || 0), 0);
+    const totalValidNoAccessJobs = mileageData.reduce((sum, data) => sum + (data.validNoAccessJobs || 0), 0);
 
     // Debug logging
     console.log('Mileage Report Debug:');
@@ -1684,6 +1823,7 @@ router.get('/mileage-report', protect, async (req, res) => {
     console.log('- Total distance (km):', totalDistanceKm);
     console.log('- Total distance (miles):', totalDistanceMiles);
     console.log('- Total mileage payment:', totalMileagePayment);
+    console.log('- Total bonus earned:', totalBonus);
 
     res.json({
       success: true,
@@ -1693,6 +1833,9 @@ router.get('/mileage-report', protect, async (req, res) => {
         totalDistance: totalDistanceKm, // Keep in km for backward compatibility
         totalDistanceMiles: totalDistanceMiles, // Add miles
         totalMileagePayment: totalMileagePayment, // Add total payment
+        totalBonus: totalBonus, // Total bonus earned
+        totalJobsWithReading: totalJobsWithReading, // Total successful readings
+        totalValidNoAccessJobs: totalValidNoAccessJobs, // Total valid no access jobs
         totalJobs: mileageData.reduce((sum, data) => sum + data.totalJobs, 0),
         totalCompletedJobs: mileageData.reduce((sum, data) => sum + data.completedJobs, 0),
         mileageRate: mileageRate // Include rate for reference
@@ -1802,10 +1945,23 @@ router.put('/:id', protect, async (req, res) => {
 // @access  Private
 router.put('/:id/complete', protect, async (req, res) => {
   try {
+    // Log incoming request data for debugging
+    console.log('📥 Job completion request received:', {
+      jobId: req.params.id,
+      bodyKeys: Object.keys(req.body),
+      hasPhotos: !!req.body.photos,
+      photosValue: req.body.photos,
+      hasPhotoUrls: !!req.body.photoUrls,
+      photoUrlsValue: req.body.photoUrls,
+      photosType: typeof req.body.photos,
+      photosIsArray: Array.isArray(req.body.photos)
+    });
+
     const { 
       status = 'completed', 
       meterReadings, 
       photos, 
+      photoUrls, // Also accept photoUrls for compatibility
       location, 
       distanceTraveled,
       startLocation,
@@ -1931,28 +2087,33 @@ router.put('/:id/complete', protect, async (req, res) => {
                               req.body.customerRead !== null &&
                               req.body.customerRead !== undefined;
 
-    // Calculate points based on formula
+    // Calculate points and awards based on formula
+    let award = 0; // Award in pounds (£)
     if (hasReg1) {
-      // Reg1 is filled = 1 point
+      // Reg1 is filled = 1 point and £0.5 award
       points = 1;
+      award = 0.50; // £0.5 for successful reading
       isValidNoAccess = false;
     } else if (hasNoAccessStatus) {
-      // Reg1 is NOT filled AND any No Access Status option selected = 0.5 points
+      // Reg1 is NOT filled AND any No Access Status option selected = 0.5 points and £0.15 award
       points = 0.5;
+      award = 0.15; // £0.15 for No Access
       isValidNoAccess = true;
       // Set noAccessReason if provided, otherwise use customerRead as reason
       if (!noAccessReason && req.body.customerRead) {
         noAccessReason = req.body.customerRead;
       }
     } else {
-      // No Reg1 and no no access status = 0 points
+      // No Reg1 and no no access status = 0 points and £0 award
       points = 0;
+      award = 0;
       isValidNoAccess = false;
     }
     
     // Log for debugging
-    console.log('Points calculation:', {
+    console.log('Points and Award calculation:', {
       points,
+      award,
       hasMeterReadings: !!meterReadings,
       electric: meterReadings?.electric,
       gas: meterReadings?.gas,
@@ -1966,20 +2127,152 @@ router.put('/:id/complete', protect, async (req, res) => {
     });
 
     // Process photos - ensure they're stored in both photos array and meterPhotos array
+    // Accept both 'photos' and 'photoUrls' for compatibility
+    // Also check if photos are nested inside meterReadings object
+    let photosFromMeterReadings = [];
+    if (meterReadings && typeof meterReadings === 'object' && !Array.isArray(meterReadings)) {
+      // Check for photos in meterReadings
+      if (meterReadings.photos) {
+        if (Array.isArray(meterReadings.photos)) {
+          photosFromMeterReadings = meterReadings.photos.filter(p => p && String(p).trim() !== '');
+          console.log('📸 Found photos in meterReadings.photos:', {
+            count: photosFromMeterReadings.length,
+            photos: photosFromMeterReadings
+          });
+        } else if (typeof meterReadings.photos === 'string' && meterReadings.photos.trim() !== '') {
+          // Handle single photo string
+          photosFromMeterReadings = [meterReadings.photos];
+          console.log('📸 Found single photo in meterReadings.photos:', meterReadings.photos);
+        }
+      }
+    } else if (Array.isArray(meterReadings)) {
+      // Also check if meterReadings itself is an array (unlikely but possible)
+      const photosInArray = meterReadings.find(mr => mr && mr.photos);
+      if (photosInArray && Array.isArray(photosInArray.photos)) {
+        photosFromMeterReadings = photosInArray.photos.filter(p => p && String(p).trim() !== '');
+        console.log('📸 Found photos in meterReadings array:', {
+          count: photosFromMeterReadings.length,
+          photos: photosFromMeterReadings
+        });
+      }
+    }
+    
+    // Combine all possible photo sources
+    const incomingPhotos = [
+      ...(Array.isArray(photos) ? photos : photos ? [photos] : []),
+      ...(Array.isArray(photoUrls) ? photoUrls : photoUrls ? [photoUrls] : []),
+      ...photosFromMeterReadings
+    ].filter(p => p !== null && p !== undefined && String(p).trim() !== '');
+    
+    console.log('🔍 All photo sources combined:', {
+      photos: photos,
+      photosType: typeof photos,
+      photosIsArray: Array.isArray(photos),
+      photoUrls: photoUrls,
+      photoUrlsType: typeof photoUrls,
+      photoUrlsIsArray: Array.isArray(photoUrls),
+      photosFromMeterReadings: photosFromMeterReadings,
+      incomingPhotos: incomingPhotos,
+      incomingPhotosCount: incomingPhotos.length,
+      incomingPhotosDetails: incomingPhotos.map((p, i) => ({
+        index: i,
+        value: p,
+        type: typeof p,
+        length: String(p).length,
+        preview: String(p).substring(0, 50)
+      }))
+    });
     let processedPhotos = [];
     let processedMeterPhotos = [];
     
-    if (photos && Array.isArray(photos) && photos.length > 0) {
-      processedPhotos = photos.filter(p => p && p.trim() !== '');
+    if (incomingPhotos && Array.isArray(incomingPhotos) && incomingPhotos.length > 0) {
+      console.log('🔍 Processing incoming photos:', {
+        count: incomingPhotos.length,
+        photos: incomingPhotos,
+        types: incomingPhotos.map(p => typeof p)
+      });
+      
+      // Filter out empty strings and ensure all URLs are valid
+      // Accept Cloudinary URLs, HTTP URLs, local paths, or any non-empty string that looks like a URL
+      processedPhotos = incomingPhotos.filter((p, index) => {
+        if (!p) {
+          console.log(`  ❌ Photo ${index + 1}: null/undefined`);
+          return false;
+        }
+        if (typeof p !== 'string') {
+          console.log(`  ⚠️ Photo ${index + 1}: not a string, converting. Type: ${typeof p}, value:`, p);
+          // Try to convert to string
+          const stringValue = String(p);
+          if (stringValue && stringValue.trim() !== '') {
+            p = stringValue;
+          } else {
+            return false;
+          }
+        }
+        const trimmed = p.trim();
+        if (trimmed === '') {
+          console.log(`  ❌ Photo ${index + 1}: empty string`);
+          return false;
+        }
+        // More lenient validation - accept any non-empty string that looks like it could be a URL
+        // Cloudinary URLs, HTTP/HTTPS URLs, local paths, or any string with / in it
+        const isValid = trimmed.startsWith('https://') || 
+                        trimmed.startsWith('http://') || 
+                        trimmed.startsWith('/uploads/') ||
+                        trimmed.startsWith('/') ||
+                        trimmed.includes('/') ||
+                        trimmed.includes('.jpg') ||
+                        trimmed.includes('.jpeg') ||
+                        trimmed.includes('.png') ||
+                        trimmed.includes('cloudinary') ||
+                        trimmed.length > 10; // Accept any string longer than 10 chars as potential URL
+        
+        if (!isValid) {
+          console.log(`  ❌ Photo ${index + 1}: invalid URL format:`, trimmed);
+        } else {
+          console.log(`  ✅ Photo ${index + 1}: accepted URL:`, trimmed.substring(0, 80) + (trimmed.length > 80 ? '...' : ''));
+        }
+        return isValid;
+      });
+      
+      console.log('📊 Photo processing result:', {
+        received: incomingPhotos.length,
+        valid: processedPhotos.length,
+        invalid: incomingPhotos.length - processedPhotos.length
+      });
       
       // Also create meterPhotos entries for better organization
       // If we have registerIds and registerValues, match them with photos
+      // Also check if meterSerialNumber is available from meterReadings or job data
       processedMeterPhotos = processedPhotos.map((photoUrl, index) => {
+        // Try to get serial number from registerIds, meterReadings, or job data
+        let serialNumber = '';
+        if (registerIds && registerIds[index]) {
+          serialNumber = registerIds[index];
+        } else if (meterReadings?.meterSerialNumber) {
+          serialNumber = meterReadings.meterSerialNumber;
+        } else if (job.meterSerialNumber) {
+          serialNumber = job.meterSerialNumber;
+        }
+        
+        // Try to get reading from registerValues or meterReadings
+        let reading = null;
+        if (registerValues && registerValues[index] != null) {
+          reading = registerValues[index];
+        } else if (meterReadings) {
+          // Try electric, gas, or water reading (standard format)
+          reading = meterReadings.electric || meterReadings.gas || meterReadings.water || null;
+          // Also check if meterReadings is in the mobile app format (with register values)
+          if (!reading && meterReadings.registerValues && meterReadings.registerValues[index]) {
+            reading = meterReadings.registerValues[index];
+          }
+        }
+        
         const meterPhoto = {
-          meterType: 'meter', // Default type
+          meterType: job.jobType || 'meter', // Use job type if available
           photoUrl: photoUrl,
-          serialNumber: registerIds && registerIds[index] ? registerIds[index] : '',
-          reading: registerValues && registerValues[index] != null ? registerValues[index] : null,
+          serialNumber: serialNumber,
+          reading: reading,
           timestamp: new Date()
         };
         return meterPhoto;
@@ -2003,16 +2296,16 @@ router.put('/:id/complete', protect, async (req, res) => {
       processedPhotos = job.photos;
     }
 
+    // Build updateData - photos will be added after processing
     const updateData = {
       status,
       completedDate: new Date(),
       employeeId,
       points,
+      award, // Save award amount
       validNoAccess: isValidNoAccess,
       ...(noAccessReason && { noAccessReason }),
       ...(meterReadings && { meterReadings }),
-      ...(processedPhotos.length > 0 && { photos: processedPhotos }),
-      ...(processedMeterPhotos.length > 0 && { meterPhotos: processedMeterPhotos }),
       ...(location && { location }),
       ...(distanceTraveled && { distanceTraveled: calculatedDistance }),
       ...(startLocation && { startLocation }),
@@ -2027,12 +2320,93 @@ router.put('/:id/complete', protect, async (req, res) => {
       ...(customerRead && { customerRead })
     };
     
+    // IMPORTANT: Photos and meterPhotos will be added to updateData after processing
+    
     // Debug logging for photos
     console.log('Job completion - Photo data:', {
       receivedPhotos: photos,
+      receivedPhotoUrls: photoUrls,
+      incomingPhotos: incomingPhotos,
       processedPhotos: processedPhotos,
       processedMeterPhotos: processedMeterPhotos,
-      jobId: req.params.id
+      processedPhotosCount: processedPhotos.length,
+      processedMeterPhotosCount: processedMeterPhotos.length,
+      jobId: req.params.id,
+      registerIds: registerIds,
+      registerValues: registerValues,
+      meterReadings: meterReadings,
+      willSavePhotos: processedPhotos.length > 0,
+      willSaveMeterPhotos: processedMeterPhotos.length > 0
+    });
+    
+    // CRITICAL: Always save photos if we have any - don't lose them!
+    // Priority: processedPhotos > incomingPhotos > existing photos
+    if (processedPhotos.length > 0) {
+      // We have valid processed photos - save them
+      updateData.photos = processedPhotos;
+      console.log('✅ Saving processed photos to database:', {
+        count: processedPhotos.length,
+        urls: processedPhotos
+      });
+    } else if (incomingPhotos.length > 0) {
+      // We have incoming photos but they were filtered out - save them anyway as fallback
+      // This ensures we don't lose photos due to validation issues
+      const cleanedPhotos = incomingPhotos
+        .map(p => String(p).trim())
+        .filter(p => p !== '' && p !== 'null' && p !== 'undefined');
+      
+      if (cleanedPhotos.length > 0) {
+        updateData.photos = cleanedPhotos;
+        console.log('⚠️ Saving incoming photos (bypassed validation as fallback):', {
+          count: cleanedPhotos.length,
+          urls: cleanedPhotos
+        });
+      } else {
+        console.log('⚠️ All incoming photos were empty/null after cleaning');
+      }
+    }
+    
+    // IMPORTANT: Only set photos if we actually have photos to save
+    // Don't save empty arrays - this would clear existing photos
+    // If updateData.photos is still undefined, it means no photos were provided
+    // In that case, don't set it - MongoDB will keep existing photos (if any)
+    if (updateData.photos === undefined) {
+      console.log('ℹ️ No photos to save - will keep existing photos in database (if any)');
+      // Don't set updateData.photos - this preserves existing photos
+      // Only set it if we explicitly want to clear photos (which we don't do here)
+    }
+    
+    // Always save meterPhotos if we have processed meterPhotos
+    if (processedMeterPhotos.length > 0) {
+      updateData.meterPhotos = processedMeterPhotos;
+      console.log('✅ Saving meterPhotos to database:', {
+        count: processedMeterPhotos.length,
+        photos: processedMeterPhotos.map(mp => ({
+          url: mp.photoUrl,
+          type: mp.meterType,
+          serial: mp.serialNumber
+        }))
+      });
+    }
+
+    // Log what we're about to save
+    console.log('📝 Updating job with data:', {
+      hasPhotos: !!updateData.photos,
+      photosCount: updateData.photos?.length || 0,
+      hasMeterPhotos: !!updateData.meterPhotos,
+      meterPhotosCount: updateData.meterPhotos?.length || 0,
+      updateDataKeys: Object.keys(updateData)
+    });
+
+    // Ensure photos are always included in updateData if they were provided
+    // This is critical - we must save photos even if validation is strict
+    console.log('💾 Final update data before save:', {
+      hasPhotos: !!updateData.photos,
+      photosCount: updateData.photos?.length || 0,
+      photosValue: updateData.photos,
+      hasMeterPhotos: !!updateData.meterPhotos,
+      meterPhotosCount: updateData.meterPhotos?.length || 0,
+      allKeys: Object.keys(updateData)
     });
 
     const updatedJob = await Job.findByIdAndUpdate(
@@ -2042,6 +2416,16 @@ router.put('/:id/complete', protect, async (req, res) => {
     )
       .populate('assignedTo', 'firstName lastName username employeeId department')
       .populate('house', 'address postcode city county latitude longitude meterType');
+
+    // Verify photos were saved
+    if (updatedJob) {
+      console.log('✅ Job updated. Photos in database:', {
+        photosCount: updatedJob.photos?.length || 0,
+        meterPhotosCount: updatedJob.meterPhotos?.length || 0,
+        photos: updatedJob.photos,
+        meterPhotos: updatedJob.meterPhotos?.map(mp => ({ url: mp.photoUrl, type: mp.meterType }))
+      });
+    }
 
     // Update user's jobsCompleted count and weekly performance
     if (status === 'completed' && job.status !== 'completed') {
@@ -2185,7 +2569,17 @@ router.put('/:id/complete', protect, async (req, res) => {
           
           const freshTotalPoints = freshPointsFromJobs + freshPointsFromNoAccess;
           
+          // Calculate bonuses: £0.5 for successful reading, £0.15 for No Access
+          const bonusPerSuccessfulReading = 0.50; // £0.5 per successful reading
+          const bonusPerNoAccess = 0.15; // £0.15 per No Access
+          const totalBonusFromJobs = jobsWithReading * bonusPerSuccessfulReading;
+          const totalBonusFromNoAccess = validNoAccessJobs * bonusPerNoAccess;
+          const totalBonusEarned = totalBonusFromJobs + totalBonusFromNoAccess;
+          
           const dateStr = `${today.getDate().toString().padStart(2, '0')}/${(today.getMonth()+1).toString().padStart(2, '0')}/${today.getFullYear()}`;
+          const operativeName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.username;
+          const operativeId = req.user.employeeId || 'N/A';
+          
           const title = 'Daily Mileage & Performance Report';
           const body = `Daily Report for ${dateStr}:\n\n` +
             `📊 Total Mileage: ${totalMiles.toFixed(2)} miles\n` +
@@ -2194,10 +2588,14 @@ router.put('/:id/complete', protect, async (req, res) => {
             `⭐ Points from Completed Jobs: ${freshPointsFromJobs}\n` +
             `⭐ Points from Valid No Access: ${freshPointsFromNoAccess}\n` +
             `🎯 Total Points Earned: ${freshTotalPoints}\n\n` +
+            `💰 Bonus from Successful Readings: £${totalBonusFromJobs.toFixed(2)} (${jobsWithReading} × £${bonusPerSuccessfulReading.toFixed(2)})\n` +
+            `💰 Bonus from No Access: £${totalBonusFromNoAccess.toFixed(2)} (${validNoAccessJobs} × £${bonusPerNoAccess.toFixed(2)})\n` +
+            `💵 Total Bonus Earned: £${totalBonusEarned.toFixed(2)}\n\n` +
             `💰 Mileage Payment: £${mileagePayment.toFixed(2)} (${totalMiles.toFixed(2)} miles × £0.35)`;
           
           const Message = require('../models/message.model');
-          // Create message and send ONLY to operative (not admin)
+          
+          // Create message and send ONLY to operative (NOT to admin)
           const msg = await Message.create({ 
             recipient: req.user.id, // Only sent to operative
             title, 
@@ -2212,13 +2610,17 @@ router.put('/:id/complete', protect, async (req, res) => {
               pointsFromJobs: freshPointsFromJobs,
               pointsFromNoAccess: freshPointsFromNoAccess,
               totalPoints: freshTotalPoints,
+              bonusFromJobs: totalBonusFromJobs,
+              bonusFromNoAccess: totalBonusFromNoAccess,
+              totalBonusEarned: totalBonusEarned,
               mileagePayment,
               mileageRate: 0.35, // Store rate for reference
-              reportType: 'daily_mileage_performance' // Identify report type
+              reportType: 'daily_mileage_performance', // Identify report type
+              operativeName: operativeName,
+              operativeId: operativeId
             } 
           });
-          // Send notification ONLY to operative (not admin)
-          // Admin does NOT receive notifications for daily reports
+          // Send notification ONLY to operative (admin does NOT receive copies)
           global.io.to(`user_${req.user.id}`).emit('message', { type: 'new_message', message: msg });
         }
       } catch (e) {
@@ -2366,24 +2768,78 @@ router.post('/:id/complete', protect, async (req, res) => {
       return res.status(400).json({ message: 'Job is not in progress' });
     }
 
-    const { endLocation, distanceTraveled, locationHistory, meterReadings, photoUrls } = req.body;
+    // Log incoming request
+    console.log('📥 POST Job completion request received:', {
+      jobId: req.params.id,
+      hasPhotoUrls: !!req.body.photoUrls,
+      photoUrls: req.body.photoUrls,
+      hasPhotos: !!req.body.photos,
+      photos: req.body.photos
+    });
+
+    const { endLocation, distanceTraveled, locationHistory, meterReadings, photoUrls, photos } = req.body;
+
+    // Process photoUrls or photos - filter and validate
+    const incomingPhotos = photoUrls || photos || [];
+    let processedPhotos = [];
+    let processedMeterPhotos = [];
+    
+    if (incomingPhotos && Array.isArray(incomingPhotos) && incomingPhotos.length > 0) {
+      processedPhotos = incomingPhotos.filter(p => {
+        if (!p || typeof p !== 'string') return false;
+        const trimmed = p.trim();
+        return trimmed !== '' && (trimmed.startsWith('https://') || trimmed.startsWith('http://') || trimmed.startsWith('/uploads/'));
+      });
+      
+      console.log('📸 Processing photos:', {
+        received: incomingPhotos.length,
+        valid: processedPhotos.length,
+        urls: processedPhotos
+      });
+      
+      // Create meterPhotos entries
+      processedMeterPhotos = processedPhotos.map((photoUrl) => ({
+        meterType: job.jobType || 'meter',
+        photoUrl: photoUrl,
+        timestamp: new Date()
+      }));
+    }
+
+    // Prepare update data
+    const updateData = {
+      status: 'completed',
+      completedDate: new Date(),
+      endLocation: {
+        latitude: endLocation.latitude,
+        longitude: endLocation.longitude,
+        timestamp: new Date(endLocation.timestamp)
+      },
+      distanceTraveled: distanceTraveled || 0,
+      locationHistory: locationHistory || [],
+      meterReadings: meterReadings || {}
+    };
+
+    // Always save photos if we have processed photos
+    if (processedPhotos.length > 0) {
+      updateData.photos = processedPhotos;
+      console.log('✅ Saving photos to database:', processedPhotos);
+    }
+    if (processedMeterPhotos.length > 0) {
+      updateData.meterPhotos = processedMeterPhotos;
+      console.log('✅ Saving meterPhotos to database:', processedMeterPhotos.length, 'photos');
+    }
+
+    console.log('📝 Updating job with data:', {
+      hasPhotos: !!updateData.photos,
+      photosCount: updateData.photos?.length || 0,
+      hasMeterPhotos: !!updateData.meterPhotos,
+      meterPhotosCount: updateData.meterPhotos?.length || 0
+    });
 
     // Update job with completion data
     const updatedJob = await Job.findByIdAndUpdate(
       req.params.id,
-      {
-        status: 'completed',
-        completedDate: new Date(),
-        endLocation: {
-          latitude: endLocation.latitude,
-          longitude: endLocation.longitude,
-          timestamp: new Date(endLocation.timestamp)
-        },
-        distanceTraveled: distanceTraveled || 0,
-        locationHistory: locationHistory || [],
-        meterReadings: meterReadings || {},
-        photos: photoUrls || []
-      },
+      updateData,
       { new: true }
     ).populate('assignedTo', 'firstName lastName username employeeId department');
 

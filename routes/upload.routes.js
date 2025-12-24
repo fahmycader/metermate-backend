@@ -1,42 +1,13 @@
 const express = require('express');
-const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
-
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    const uploadDir = 'uploads/meter-photos';
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, `meter-${req.body.jobId}-${req.body.meterType}-${uniqueSuffix}${path.extname(file.originalname)}`);
-  }
-});
-
-const upload = multer({
-  storage: storage,
-  limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB limit
-  },
-  fileFilter: function (req, file, cb) {
-    // Check file type
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only image files are allowed'), false);
-    }
-  }
-});
+const upload = require('../middleware/upload');
+const { uploadToCloudinary } = require('../utils/cloudinary');
 
 // @route   POST /api/upload/meter-photo
-// @desc    Upload meter photo
+// @desc    Upload meter photo to Cloudinary
 // @access  Private (Meter readers only)
 router.post('/meter-photo', protect, upload.single('photo'), async (req, res) => {
   try {
@@ -54,20 +25,72 @@ router.post('/meter-photo', protect, upload.single('photo'), async (req, res) =>
       return res.status(400).json({ message: 'Job ID and meter type are required' });
     }
 
-    // Generate URL for the uploaded file
-    const photoUrl = `/uploads/meter-photos/${req.file.filename}`;
+    // Validate file buffer
+    if (!req.file.buffer || req.file.buffer.length === 0) {
+      return res.status(400).json({ message: 'File buffer is empty' });
+    }
+
+    // Generate unique public ID for Cloudinary
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const publicId = `meter-${jobId}-${meterType}-${uniqueSuffix}`;
+
+    console.log('📸 Starting Cloudinary upload:', {
+      jobId,
+      meterType,
+      fileSize: req.file.size,
+      mimetype: req.file.mimetype,
+      originalName: req.file.originalname,
+      publicId: publicId
+    });
+
+    // Upload to Cloudinary
+    const uploadResult = await uploadToCloudinary(
+      req.file.buffer,
+      'meter-photos',
+      publicId
+    );
+
+    console.log('✅ Photo uploaded to Cloudinary successfully:', {
+      jobId,
+      meterType,
+      url: uploadResult.url,
+      publicId: uploadResult.public_id,
+      size: uploadResult.bytes,
+      width: uploadResult.width,
+      height: uploadResult.height
+    });
+
+    // Ensure we return the secure URL
+    const photoUrl = uploadResult.url || uploadResult.secure_url;
+    if (!photoUrl) {
+      console.error('❌ Cloudinary upload succeeded but no URL returned:', uploadResult);
+      return res.status(500).json({ 
+        message: 'Upload succeeded but no URL was returned',
+        error: 'Missing photoUrl in Cloudinary response'
+      });
+    }
 
     res.json({
       success: true,
-      message: 'Photo uploaded successfully',
-      photoUrl: photoUrl,
-      filename: req.file.filename,
-      originalName: req.file.originalname,
-      size: req.file.size
+      message: 'Photo uploaded successfully to cloud storage',
+      photoUrl: photoUrl, // Return Cloudinary secure URL
+      publicId: uploadResult.public_id,
+      filename: req.file.originalname,
+      size: uploadResult.bytes,
+      width: uploadResult.width,
+      height: uploadResult.height
     });
   } catch (error) {
-    console.error('Upload photo error:', error);
-    res.status(500).json({ message: 'Server Error', error: error.message });
+    console.error('❌ Upload photo error:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    });
+    res.status(500).json({ 
+      message: 'Server Error', 
+      error: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 

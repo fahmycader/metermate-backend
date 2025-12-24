@@ -55,7 +55,10 @@ router.get('/admin/list', protect, async (req, res) => {
     }
     const { recipient } = req.query;
     const q = recipient ? { recipient } : {};
-    const msgs = await Message.find(q).sort({ createdAt: -1 });
+    // Populate recipient with employeeId and other fields
+    const msgs = await Message.find(q)
+      .populate('recipient', 'firstName lastName username employeeId email')
+      .sort({ createdAt: -1 });
     res.json({ success: true, data: msgs });
   } catch (e) {
     res.status(500).json({ success: false, message: 'Server Error', error: e.message });

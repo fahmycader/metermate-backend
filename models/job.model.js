@@ -166,6 +166,11 @@ const jobSchema = new mongoose.Schema({
     type: Number,
     default: 0, // 1 for valid job completion, 0.5 for valid no access
   },
+  // Award tracking (£1 for successful reading, £0.15 for No Access)
+  award: {
+    type: Number,
+    default: 0, // £1 for successful reading, £0.15 for No Access
+  },
   validNoAccess: {
     type: Boolean,
     default: false,
