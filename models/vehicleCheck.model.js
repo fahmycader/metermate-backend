@@ -50,6 +50,9 @@ const vehicleCheckSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  shiftEndTime: {
+    type: Date,
+  },
 }, {
   timestamps: true,
 });

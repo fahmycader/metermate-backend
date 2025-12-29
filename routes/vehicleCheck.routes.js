@@ -29,6 +29,11 @@ router.post('/', protect, async (req, res) => {
       return res.status(400).json({ message: 'All vehicle check fields are required' });
     }
 
+    const shiftStartTime = new Date();
+    // Calculate shift end time (8 hours from start time)
+    const shiftEndTime = new Date(shiftStartTime);
+    shiftEndTime.setHours(shiftEndTime.getHours() + 8);
+
     const vehicleCheck = await VehicleCheck.create({
       operative: req.user.id,
       tyres,
@@ -38,7 +43,8 @@ router.post('/', protect, async (req, res) => {
       engineOil,
       dashboardLights,
       comments: comments || '',
-      shiftStartTime: new Date(),
+      shiftStartTime: shiftStartTime,
+      shiftEndTime: shiftEndTime,
     });
 
     res.status(201).json({
@@ -145,6 +151,49 @@ router.get('/operative/:operativeId', protect, async (req, res) => {
     });
   } catch (error) {
     console.error('Get operative vehicle checks error:', error);
+    res.status(500).json({ message: 'Server Error', error: error.message });
+  }
+});
+
+// @route   GET /api/vehicle-checks/today
+// @desc    Get today's vehicle check for the current user
+// @access  Private (Operative only)
+router.get('/today', protect, async (req, res) => {
+  try {
+    // Only operatives can get their own today's check
+    if (req.user.department !== 'meter') {
+      return res.status(403).json({ message: 'Access denied. Operatives only.' });
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const vehicleCheck = await VehicleCheck.findOne({
+      operative: req.user.id,
+      checkDate: {
+        $gte: today,
+        $lt: tomorrow
+      }
+    })
+      .populate('operative', 'firstName lastName employeeId username')
+      .sort({ checkDate: -1 });
+
+    if (!vehicleCheck) {
+      return res.json({
+        success: true,
+        data: null,
+        message: 'No vehicle check found for today'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: vehicleCheck,
+    });
+  } catch (error) {
+    console.error('Get today\'s vehicle check error:', error);
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
 });

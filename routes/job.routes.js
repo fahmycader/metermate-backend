@@ -1018,6 +1018,7 @@ router.get('/today', protect, async (req, res) => {
       .populate('house', 'address postcode city county latitude longitude meterType')
       .populate('assignedTo', 'firstName lastName username employeeId department')
       .sort({ sequenceNumber: 1, scheduledDate: 1 }); // Sort by sequence number first, then scheduled date
+    // createdAt is automatically included via timestamps: true in the model
 
     // Sort by postcode/location proximity for better route planning
     jobs = sortJobsByProximity(jobs);
@@ -2466,21 +2467,60 @@ router.put('/:id/complete', protect, async (req, res) => {
         const today = new Date();
         const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
         const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+        // Check for remaining jobs assigned to this user (not completed yet)
+        // Count ALL jobs assigned to the user, regardless of scheduledDate
+        // This ensures we count jobs that were uploaded/assigned today
         const remaining = await Job.countDocuments({
           assignedTo: req.user._id,
-          scheduledDate: { $gte: startOfDay, $lt: endOfDay },
-          status: { $ne: 'completed' }
+          status: { $ne: 'completed' },
+          _id: { $ne: req.params.id } // Explicitly exclude the current job
         });
+        
+        console.log('📊 Job completion check:', {
+          userId: req.user._id,
+          jobId: req.params.id,
+          remainingJobs: remaining,
+          dateRange: { startOfDay, endOfDay }
+        });
+        
+        // Only send report if this is truly the last job (remaining === 0)
         if (remaining === 0) {
-          const completedToday = await Job.find({
+          console.log('✅ Last job completed - preparing mileage report');
+          
+          // Count total jobs assigned to this user (all jobs, not just scheduled today)
+          // This ensures we count all jobs that were uploaded/assigned, regardless of date
+          const totalAssignedJobs = await Job.countDocuments({
+            assignedTo: req.user._id
+          });
+          
+          // Count jobs completed today
+          const totalCompletedToday = await Job.countDocuments({
             assignedTo: req.user._id,
-            scheduledDate: { $gte: startOfDay, $lt: endOfDay },
+            completedDate: { $gte: startOfDay, $lt: endOfDay },
             status: 'completed'
           });
+          
+          console.log('📊 Job completion verification:', {
+            totalAssigned: totalAssignedJobs,
+            totalCompletedToday: totalCompletedToday,
+            allJobsCompleted: remaining === 0
+          });
+          
+          // Only proceed if there are no remaining incomplete jobs
+          // This means all assigned jobs have been completed
+          if (remaining === 0 && totalCompletedToday > 0) {
+            // Use completedDate instead of scheduledDate to find jobs completed today
+            const completedToday = await Job.find({
+              assignedTo: req.user._id,
+              completedDate: { $gte: startOfDay, $lt: endOfDay },
+              status: 'completed'
+            });
           
           // Calculate statistics
           // Distance is already in miles (base unit)
           const totalMiles = completedToday.reduce((sum, j) => sum + (j.distanceTraveled || 0), 0);
+          // Convert miles to kilometers (1 mile = 1.60934 km)
+          const totalKm = totalMiles * 1.60934;
           
           // Jobs completed successfully (with Reg1 filled - registerValues[0] or registerIds[0])
           const jobsWithReading = completedToday.filter(j => {
@@ -2539,11 +2579,12 @@ router.put('/:id/complete', protect, async (req, res) => {
           const mileagePayment = totalMiles * mileageRate;
           
           // Re-fetch completed jobs to ensure we have the latest points data
+          // Use completedDate instead of scheduledDate to find jobs completed today
           const completedJobsWithPoints = await Job.find({
             assignedTo: req.user._id,
-            scheduledDate: { $gte: startOfDay, $lt: endOfDay },
+            completedDate: { $gte: startOfDay, $lt: endOfDay },
             status: 'completed'
-          }).select('points validNoAccess meterReadings registerValues registerIds customerRead');
+          }).select('points validNoAccess meterReadings registerValues registerIds customerRead distanceTraveled');
           
           // Recalculate points based on saved points in database
           // Points are already calculated correctly when job is completed:
@@ -2591,33 +2632,59 @@ router.put('/:id/complete', protect, async (req, res) => {
           
           const Message = require('../models/message.model');
           
-          // Create message and send ONLY to operative (NOT to admin)
-          const msg = await Message.create({ 
-            recipient: req.user.id, // Only sent to operative
-            title, 
-            body, 
-            meta: { 
-              date: dateStr, 
-              totalKm, 
-              totalMiles, 
-              jobCount: completedToday.length,
-              jobsWithReading,
-              validNoAccessJobs,
-              pointsFromJobs: freshPointsFromJobs,
-              pointsFromNoAccess: freshPointsFromNoAccess,
-              totalPoints: freshTotalPoints,
-              bonusFromJobs: totalBonusFromJobs,
-              bonusFromNoAccess: totalBonusFromNoAccess,
-              totalBonusEarned: totalBonusEarned,
-              mileagePayment,
-              mileageRate: 0.35, // Store rate for reference
-              reportType: 'daily_mileage_performance', // Identify report type
-              operativeName: operativeName,
-              operativeId: operativeId
-            } 
+          // Check if a daily report message already exists for today to prevent duplicates
+          const existingMessage = await Message.findOne({
+            recipient: req.user.id,
+            'meta.reportType': 'daily_mileage_performance',
+            'meta.date': dateStr,
+            createdAt: { $gte: startOfDay, $lt: endOfDay }
           });
-          // Send notification ONLY to operative (admin does NOT receive copies)
-          global.io.to(`user_${req.user.id}`).emit('message', { type: 'new_message', message: msg });
+          
+          console.log('📧 Mileage report check:', {
+            userId: req.user.id,
+            dateStr,
+            existingMessage: existingMessage ? existingMessage._id : null,
+            willCreate: !existingMessage
+          });
+          
+          // Only create message if one doesn't already exist for today
+          if (!existingMessage) {
+            console.log('📧 Creating new mileage report message');
+            // Create message and send ONLY to operative (NOT to admin)
+            const msg = await Message.create({ 
+              recipient: req.user.id, // Only sent to operative
+              title, 
+              body, 
+              meta: { 
+                date: dateStr, 
+                totalKm, 
+                totalMiles, 
+                jobCount: completedToday.length,
+                jobsWithReading,
+                validNoAccessJobs,
+                pointsFromJobs: freshPointsFromJobs,
+                pointsFromNoAccess: freshPointsFromNoAccess,
+                totalPoints: freshTotalPoints,
+                bonusFromJobs: totalBonusFromJobs,
+                bonusFromNoAccess: totalBonusFromNoAccess,
+                totalBonusEarned: totalBonusEarned,
+                mileagePayment,
+                mileageRate: 0.35, // Store rate for reference
+                reportType: 'daily_mileage_performance', // Identify report type
+                operativeName: operativeName,
+                operativeId: operativeId
+              } 
+            });
+            // Send notification ONLY to operative (admin does NOT receive copies)
+            global.io.to(`user_${req.user.id}`).emit('message', { type: 'new_message', message: msg });
+            console.log('✅ Daily mileage report message sent to operative');
+          } else {
+            console.log('ℹ️ Daily mileage report message already exists for today, skipping duplicate');
+          }
+          } else {
+            console.log('⚠️ Not all jobs completed yet - skipping mileage report');
+            console.log(`   Total Assigned: ${totalAssignedJobs}, Completed Today: ${totalCompletedToday}, Remaining: ${remaining}`);
+          }
         }
       } catch (e) {
         console.error('Auto mileage message error:', e.message);
@@ -2929,13 +2996,114 @@ router.get('/:id/location', protect, async (req, res) => {
   }
 });
 
+// @route   DELETE /api/jobs/bulk
+// @desc    Delete multiple jobs by IDs
+// @access  Private (Admin only)
+// NOTE: This route must be defined BEFORE /:id route to avoid route matching conflicts
+router.delete('/bulk', protect, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied. Admin only.' });
+    }
+
+    // Log request body for debugging
+    console.log('Bulk delete request body:', req.body);
+    console.log('Request method:', req.method);
+    console.log('Request headers content-type:', req.headers['content-type']);
+
+    // Try to get jobIds from body, query, or params
+    let jobIds = req.body?.jobIds;
+    
+    // Fallback: check query string if body is empty (some clients don't send body in DELETE)
+    if (!jobIds && req.query.jobIds) {
+      try {
+        jobIds = JSON.parse(req.query.jobIds);
+      } catch (e) {
+        jobIds = Array.isArray(req.query.jobIds) ? req.query.jobIds : [req.query.jobIds];
+      }
+    }
+
+    // Check if body is empty or undefined
+    if (!req.body && !req.query.jobIds) {
+      console.error('Bulk delete: No request body or query params found');
+      return res.status(400).json({ 
+        message: 'Request body with jobIds array is required',
+        hint: 'Send jobIds in request body: { "jobIds": ["id1", "id2", ...] }'
+      });
+    }
+
+    if (!jobIds || !Array.isArray(jobIds) || jobIds.length === 0) {
+      console.error('Bulk delete: Invalid jobIds', { jobIds, body: req.body, query: req.query });
+      return res.status(400).json({ 
+        message: 'Job IDs array is required and must be a non-empty array',
+        received: { body: req.body, query: req.query }
+      });
+    }
+
+    // Validate all IDs are valid ObjectIds
+    const validIds = jobIds.filter(id => {
+      if (!id || typeof id !== 'string') return false;
+      return mongoose.Types.ObjectId.isValid(id);
+    });
+    
+    if (validIds.length === 0) {
+      return res.status(400).json({ 
+        message: 'No valid job IDs provided',
+        receivedIds: jobIds 
+      });
+    }
+
+    // Convert string IDs to ObjectIds
+    const objectIds = validIds.map(id => new mongoose.Types.ObjectId(id));
+
+    // Delete jobs
+    const result = await Job.deleteMany({ _id: { $in: objectIds } });
+
+    console.log(`Bulk delete: Deleted ${result.deletedCount} job(s) out of ${validIds.length} requested`);
+
+    // Emit WebSocket event for bulk job deletion
+    if (global.io) {
+      global.io.to('admin_room').emit('jobUpdate', {
+        type: 'jobsBulkDeleted',
+        count: result.deletedCount,
+        jobIds: validIds,
+        timestamp: new Date()
+      });
+    }
+
+    res.json({ 
+      success: true,
+      message: `Successfully deleted ${result.deletedCount} job(s)`,
+      deletedCount: result.deletedCount,
+      requestedCount: validIds.length
+    });
+  } catch (error) {
+    console.error('Bulk delete jobs error:', error);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      message: 'Server Error', 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
 // @route   DELETE /api/jobs/:id
 // @desc    Delete a job
 // @access  Private (Admin only)
+// NOTE: This route must be defined AFTER /bulk route to avoid route matching conflicts
 router.delete('/:id', protect, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Access denied. Admin only.' });
+    }
+
+    // Validate that the ID is a valid ObjectId
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ 
+        message: 'Invalid job ID format',
+        hint: 'If you meant to delete multiple jobs, use the /bulk endpoint'
+      });
     }
 
     const job = await Job.findByIdAndDelete(req.params.id);
@@ -2956,52 +3124,6 @@ router.delete('/:id', protect, async (req, res) => {
     res.json({ message: 'Job deleted successfully' });
   } catch (error) {
     console.error('Delete job error:', error);
-    res.status(500).json({ message: 'Server Error', error: error.message });
-  }
-});
-
-// @route   DELETE /api/jobs/bulk
-// @desc    Delete multiple jobs by IDs
-// @access  Private (Admin only)
-router.delete('/bulk', protect, async (req, res) => {
-  try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Access denied. Admin only.' });
-    }
-
-    const { jobIds } = req.body;
-
-    if (!jobIds || !Array.isArray(jobIds) || jobIds.length === 0) {
-      return res.status(400).json({ message: 'Job IDs array is required' });
-    }
-
-    // Validate all IDs are valid ObjectIds
-    const validIds = jobIds.filter(id => mongoose.Types.ObjectId.isValid(id));
-    
-    if (validIds.length === 0) {
-      return res.status(400).json({ message: 'No valid job IDs provided' });
-    }
-
-    // Delete jobs
-    const result = await Job.deleteMany({ _id: { $in: validIds } });
-
-    // Emit WebSocket event for bulk job deletion
-    if (global.io) {
-      global.io.to('admin_room').emit('jobUpdate', {
-        type: 'jobsBulkDeleted',
-        count: result.deletedCount,
-        jobIds: validIds,
-        timestamp: new Date()
-      });
-    }
-
-    res.json({ 
-      success: true,
-      message: `Successfully deleted ${result.deletedCount} job(s)`,
-      deletedCount: result.deletedCount
-    });
-  } catch (error) {
-    console.error('Bulk delete jobs error:', error);
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
 });

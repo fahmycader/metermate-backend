@@ -146,22 +146,51 @@ router.get('/:id/progress', protect, async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Get date range (default to last 7 days)
+    // Get date range (default to all time, or use provided dates)
     const { startDate, endDate } = req.query;
-    const end = endDate ? new Date(endDate) : new Date();
-    const start = startDate ? new Date(startDate) : new Date();
-    start.setDate(start.getDate() - 7); // Default to 7 days ago
-
-    // Get all jobs assigned to this user in the date range, including location data
-    const allJobs = await Job.find({
-      assignedTo: userId,
-      scheduledDate: {
-        $gte: start,
-        $lte: end
+    
+    // Build date filter - if dates provided, use them; otherwise get all jobs
+    let dateFilter = {};
+    if (startDate || endDate) {
+      dateFilter = {};
+      if (startDate) {
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0); // Start of day
+        dateFilter.$gte = start;
       }
-    })
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999); // End of day
+        dateFilter.$lte = end;
+      }
+    }
+    // If no dates provided, don't filter by date (get all jobs)
+
+    // Get all jobs assigned to this user, optionally filtered by date range
+    const query = {
+      assignedTo: userId
+    };
+    
+    if (Object.keys(dateFilter).length > 0) {
+      query.scheduledDate = dateFilter;
+    }
+
+    console.log('Progress query:', JSON.stringify(query, null, 2));
+    console.log('Date filter:', dateFilter);
+    console.log('User ID:', userId);
+
+    const allJobs = await Job.find(query)
     .select('status startLocation endLocation location address house scheduledDate completedDate jobId sequenceNumber')
     .populate('house', 'latitude longitude address postcode city');
+
+    console.log(`Found ${allJobs.length} jobs for user ${userId}`);
+    console.log('Jobs by status:', {
+      total: allJobs.length,
+      completed: allJobs.filter(j => j.status === 'completed').length,
+      pending: allJobs.filter(j => j.status === 'pending').length,
+      in_progress: allJobs.filter(j => j.status === 'in_progress').length,
+      cancelled: allJobs.filter(j => j.status === 'cancelled').length,
+    });
 
     // Calculate statistics
     const totalJobs = allJobs.length;
@@ -212,14 +241,14 @@ router.get('/:id/progress', protect, async (req, res) => {
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
-    // Get today's vehicle check (start time)
+    // Get today's vehicle check (start time and end time)
     const todayVehicleCheck = await VehicleCheck.findOne({
       operative: userId,
       checkDate: {
         $gte: today,
         $lt: tomorrow
       }
-    }).sort({ checkDate: -1 });
+    }).sort({ checkDate: -1 }).select('shiftStartTime shiftEndTime checkDate');
 
     // Get last completed job for today (end time)
     const lastCompletedJob = await Job.findOne({
@@ -240,13 +269,20 @@ router.get('/:id/progress', protect, async (req, res) => {
     if (todayVehicleCheck && todayVehicleCheck.shiftStartTime) {
       startTime = todayVehicleCheck.shiftStartTime;
       
-      if (lastCompletedJob && lastCompletedJob.completedDate) {
+      // Use shiftEndTime from vehicle check if available (8 hours from start)
+      if (todayVehicleCheck.shiftEndTime) {
+        endTime = todayVehicleCheck.shiftEndTime;
+        const diffMs = endTime - startTime;
+        const diffHours = diffMs / (1000 * 60 * 60);
+        totalHours = Math.round(diffHours * 100) / 100; // Round to 2 decimal places
+      } else if (lastCompletedJob && lastCompletedJob.completedDate) {
+        // Fallback to last completed job if shift end time not set
         endTime = lastCompletedJob.completedDate;
         const diffMs = endTime - startTime;
         const diffHours = diffMs / (1000 * 60 * 60);
         totalHours = Math.round(diffHours * 100) / 100; // Round to 2 decimal places
       } else {
-        // Shift started but no jobs completed yet
+        // Shift started but no jobs completed yet - calculate from current time
         const now = new Date();
         const diffMs = now - startTime;
         const diffHours = diffMs / (1000 * 60 * 60);
@@ -257,7 +293,8 @@ router.get('/:id/progress', protect, async (req, res) => {
         startTime: startTime,
         endTime: endTime,
         totalHours: totalHours,
-        isActive: !endTime // If no end time, shift is still active
+        isActive: !endTime || (endTime && new Date() < endTime), // Active if no end time or current time is before end time
+        shiftEndTime: todayVehicleCheck.shiftEndTime // Include shift end time (8 hours from start)
       };
     }
 
@@ -286,8 +323,8 @@ router.get('/:id/progress', protect, async (req, res) => {
         totalDistanceMiles: Math.round(totalDistanceMiles * 100) / 100,
       },
       dateRange: {
-        start: start.toISOString().split('T')[0],
-        end: end.toISOString().split('T')[0],
+        start: startDate ? new Date(startDate).toISOString().split('T')[0] : null,
+        end: endDate ? new Date(endDate).toISOString().split('T')[0] : null,
       },
       workHours: workHours, // Today's work hours (start time, end time, total hours)
       // Include job locations for map visualization
