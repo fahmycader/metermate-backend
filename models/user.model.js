@@ -28,7 +28,16 @@ const userSchema = new mongoose.Schema({
     type: String,
     trim: true,
     lowercase: true,
-    default: '',
+    unique: true,
+    sparse: true, // Allows multiple null values but enforces uniqueness for non-null values
+    validate: {
+      validator: function(v) {
+        // Only validate if email is provided
+        if (!v) return true;
+        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+      },
+      message: 'Please provide a valid email address'
+    },
   },
   phone: {
     type: String,

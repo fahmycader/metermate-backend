@@ -22,9 +22,9 @@ const jobSchema = new mongoose.Schema({
       required: [true, 'State is required'],
       trim: true,
     },
-    zipCode: {
+    postcode: {
       type: String,
-      required: [true, 'Zip code is required'],
+      required: [true, 'Postcode is required'],
       trim: true,
     },
     country: {
@@ -142,7 +142,7 @@ const jobSchema = new mongoose.Schema({
   },
   distanceTraveled: {
     type: Number,
-    default: 0, // in kilometers
+    default: 0, // in miles
   },
   locationHistory: [{
     latitude: Number,

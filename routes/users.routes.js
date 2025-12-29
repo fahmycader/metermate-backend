@@ -200,11 +200,10 @@ router.get('/:id/progress', protect, async (req, res) => {
       .filter(j => j.status === 'completed')
       .reduce((sum, j) => sum + (j.points || 0), 0);
 
-    // Calculate total distance
-    const totalDistanceKm = allJobs
+    // Calculate total distance (already in miles)
+    const totalDistanceMiles = allJobs
       .filter(j => j.status === 'completed')
       .reduce((sum, j) => sum + (j.distanceTraveled || 0), 0);
-    const totalDistanceMiles = totalDistanceKm * 0.621371;
 
     // Calculate work hours for today
     const VehicleCheck = require('../models/vehicleCheck.model');
@@ -284,7 +283,6 @@ router.get('/:id/progress', protect, async (req, res) => {
         jobsWithReading,
         validNoAccessJobs,
         totalPoints,
-        totalDistanceKm: Math.round(totalDistanceKm * 100) / 100,
         totalDistanceMiles: Math.round(totalDistanceMiles * 100) / 100,
       },
       dateRange: {

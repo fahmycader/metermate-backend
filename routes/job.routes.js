@@ -112,8 +112,8 @@ function sortJobsByProximity(jobs) {
   // If no jobs have coordinates, sort by postcode
   if (jobsWithCoords.length === 0) {
     return jobs.sort((a, b) => {
-      const postcodeA = (a.house?.postcode || a.address?.zipCode || '').toString();
-      const postcodeB = (b.house?.postcode || b.address?.zipCode || '').toString();
+      const postcodeA = (a.house?.postcode || a.address?.postcode || '').toString();
+      const postcodeB = (b.house?.postcode || b.address?.postcode || '').toString();
       return postcodeA.localeCompare(postcodeB);
     });
   }
@@ -307,9 +307,9 @@ router.post('/', protect, async (req, res) => {
       });
     }
     
-    if (!jobData.address.zipCode || !jobData.address.zipCode.trim()) {
+    if (!jobData.address.postcode || !jobData.address.postcode.trim()) {
       return res.status(400).json({ 
-        message: 'Zip code/Postcode is required' 
+        message: 'Postcode is required' 
       });
     }
     
@@ -658,7 +658,7 @@ router.post('/upload-excel', protect, excelUpload.single('excelFile'), async (re
       console.log('Sample row data:', JSON.stringify(jsonData[0], null, 2));
     }
 
-    // Expected columns: street, city, state, zipCode, jobType, sup, jt, cust, meterMake, meterModel, meterSerialNumber, notes
+    // Expected columns: street, city, state, postcode, jobType, sup, jt, cust, meterMake, meterModel, meterSerialNumber, notes
     const jobsData = [];
     const jobsWithCoords = [];
 
@@ -670,7 +670,7 @@ router.post('/upload-excel', protect, excelUpload.single('excelFile'), async (re
       const street = (row.street || row.Street || row.address || row.Address || '').toString().trim();
       const city = (row.city || row.City || '').toString().trim();
       const state = (row.state || row.State || '').toString().trim();
-      const zipCode = (row.zipCode || row['zipCode'] || row['Zip Code'] || row.postcode || row.Postcode || '').toString().trim();
+      const postcode = (row.postcode || row.Postcode || row.zipCode || row['zipCode'] || row['Zip Code'] || row['Postcode'] || '').toString().trim();
       
       if (!street || !city || !state) {
         console.warn(`Skipping row ${i + 1}: Missing required address fields (street: "${street}", city: "${city}", state: "${state}")`);
@@ -683,7 +683,7 @@ router.post('/upload-excel', protect, excelUpload.single('excelFile'), async (re
       if (street) addressParts.push(street);
       if (city) addressParts.push(city);
       if (state) addressParts.push(state);
-      if (zipCode) addressParts.push(zipCode);
+      if (postcode) addressParts.push(postcode);
       const addressString = addressParts.join(', ');
 
       // Geocode address with retry logic for better accuracy
@@ -706,7 +706,7 @@ router.post('/upload-excel', protect, excelUpload.single('excelFile'), async (re
           street,
           city,
           state,
-          zipCode,
+          postcode,
           country: 'USA'
         },
         assignedTo: new mongoose.Types.ObjectId(assignedTo),
@@ -1164,7 +1164,7 @@ router.get('/today-geo', protect, async (req, res) => {
 
 // Helper function to calculate distance between two coordinates (Haversine formula)
 function calculateDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371; // Radius of the Earth in kilometers
+  const R = 3959; // Radius of the Earth in miles
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLon = (lon2 - lon1) * Math.PI / 180;
   const a = 
@@ -1172,7 +1172,7 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
     Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
     Math.sin(dLon/2) * Math.sin(dLon/2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  const distance = R * c; // Distance in kilometers
+  const distance = R * c; // Distance in miles
   return distance;
 }
 
@@ -1495,7 +1495,7 @@ router.put('/:id/test-complete', protect, async (req, res) => {
       {
         status: 'completed',
         completedDate: new Date(),
-        distanceTraveled: 5.2, // Test distance in km
+        distanceTraveled: 5.2, // Test distance in miles
         endLocation: {
           latitude: 51.5074,
           longitude: -0.1278,
@@ -1527,7 +1527,7 @@ router.get('/wage-report', protect, async (req, res) => {
       return res.status(403).json({ message: 'Access denied. Admin only.' });
     }
 
-    const { userId, startDate, endDate, ratePerKm = 0.50, fuelAllowancePerJob = 1.00 } = req.query;
+    const { userId, startDate, endDate, ratePerMile = 0.50, fuelAllowancePerJob = 1.00 } = req.query;
 
     // Build date filter
     let dateFilter = {};
@@ -1619,7 +1619,7 @@ router.get('/wage-report', protect, async (req, res) => {
 
     // Calculate wages for each user
     const wageData = Array.from(userWageMap.values()).map(data => {
-      const baseWage = data.totalDistance * parseFloat(ratePerKm);
+      const baseWage = data.totalDistance * parseFloat(ratePerMile);
       const fuelAllowance = data.completedJobs * parseFloat(fuelAllowancePerJob);
       const totalWage = baseWage + fuelAllowance;
 
@@ -1641,7 +1641,7 @@ router.get('/wage-report', protect, async (req, res) => {
       totalBaseWage: wageData.reduce((sum, data) => sum + data.baseWage, 0),
       totalFuelAllowance: wageData.reduce((sum, data) => sum + data.fuelAllowance, 0),
       totalWage: wageData.reduce((sum, data) => sum + data.totalWage, 0),
-      ratePerKm: parseFloat(ratePerKm),
+      ratePerMile: parseFloat(ratePerMile),
       fuelAllowancePerJob: parseFloat(fuelAllowancePerJob)
     };
 
@@ -1653,7 +1653,7 @@ router.get('/wage-report', protect, async (req, res) => {
         userId,
         startDate,
         endDate,
-        ratePerKm: parseFloat(ratePerKm),
+        ratePerMile: parseFloat(ratePerMile),
         fuelAllowancePerJob: parseFloat(fuelAllowancePerJob)
       }
     });
@@ -1787,15 +1787,14 @@ router.get('/mileage-report', protect, async (req, res) => {
     // Convert to array and calculate averages, total miles, and mileage payment
     const mileageRate = 0.35; // £0.35 per mile
     const mileageData = Array.from(userMileageMap.values()).map(data => {
-      // Convert kilometers to miles (1 km = 0.621371 miles)
-      const totalMiles = data.totalDistance * 0.621371;
+      // Distance is already in miles (base unit)
+      const totalMiles = data.totalDistance;
       // Calculate mileage payment
       const mileagePayment = totalMiles * mileageRate;
       
       return {
         ...data,
-        totalDistanceKm: data.totalDistance, // Keep original in km
-        totalDistanceMiles: totalMiles, // Add miles
+        totalDistanceMiles: totalMiles, // Distance in miles
         mileagePayment: mileagePayment, // Add payment
         totalBonus: data.totalBonus || 0, // Total bonus earned (from job.award field)
         jobsWithReading: data.jobsWithReading || 0, // Jobs with successful reading
@@ -1805,7 +1804,6 @@ router.get('/mileage-report', protect, async (req, res) => {
     });
 
     // Calculate summary totals
-    const totalDistanceKm = mileageData.reduce((sum, data) => sum + data.totalDistanceKm, 0);
     const totalDistanceMiles = mileageData.reduce((sum, data) => sum + data.totalDistanceMiles, 0);
     const totalMileagePayment = mileageData.reduce((sum, data) => sum + data.mileagePayment, 0);
     const totalBonus = mileageData.reduce((sum, data) => sum + (data.totalBonus || 0), 0);
@@ -1820,7 +1818,6 @@ router.get('/mileage-report', protect, async (req, res) => {
       return acc;
     }, {}));
     console.log('- Users with data:', mileageData.length);
-    console.log('- Total distance (km):', totalDistanceKm);
     console.log('- Total distance (miles):', totalDistanceMiles);
     console.log('- Total mileage payment:', totalMileagePayment);
     console.log('- Total bonus earned:', totalBonus);
@@ -1830,8 +1827,8 @@ router.get('/mileage-report', protect, async (req, res) => {
       data: mileageData,
       summary: {
         totalUsers: mileageData.length,
-        totalDistance: totalDistanceKm, // Keep in km for backward compatibility
-        totalDistanceMiles: totalDistanceMiles, // Add miles
+        totalDistance: totalDistanceMiles, // Distance in miles
+        totalDistanceMiles: totalDistanceMiles, // Distance in miles
         totalMileagePayment: totalMileagePayment, // Add total payment
         totalBonus: totalBonus, // Total bonus earned
         totalJobsWithReading: totalJobsWithReading, // Total successful readings
@@ -2482,9 +2479,8 @@ router.put('/:id/complete', protect, async (req, res) => {
           });
           
           // Calculate statistics
-          const totalKm = completedToday.reduce((sum, j) => sum + (j.distanceTraveled || 0), 0);
-          // Convert kilometers to miles (1 km = 0.621371 miles)
-          const totalMiles = totalKm * 0.621371;
+          // Distance is already in miles (base unit)
+          const totalMiles = completedToday.reduce((sum, j) => sum + (j.distanceTraveled || 0), 0);
           
           // Jobs completed successfully (with Reg1 filled - registerValues[0] or registerIds[0])
           const jobsWithReading = completedToday.filter(j => {

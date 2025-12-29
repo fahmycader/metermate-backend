@@ -1,7 +1,7 @@
 const User = require('../models/user.model');
 const jwt = require('jsonwebtoken');
 
-// Password validation function
+// Password validation function (exported for use in other controllers)
 const validatePassword = (password) => {
   if (!password || password.length < 6 || password.length > 10) {
     return 'Password must be between 6 and 10 characters';
@@ -26,15 +26,52 @@ const validatePassword = (password) => {
   return null;
 };
 
-// @desc    Register a new user
+// Export for use in other controllers
+exports.validatePassword = validatePassword;
+
+// @desc    Register a new user (requires email verification)
 // @route   POST /api/users/reg
 // @access  Public
 exports.registerUser = async (req, res) => {
   try {
-    const { username, password, firstName, lastName, email, phone, employeeId, department } = req.body;
+    const { username, password, firstName, lastName, email, phone, employeeId, department, verificationCode } = req.body;
 
     if (!username || !password) {
         return res.status(400).json({ message: 'Please provide username and password' });
+    }
+
+    // Email is now required for registration
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ message: 'Invalid email format' });
+    }
+
+    // Verify email verification code
+    if (!verificationCode) {
+      return res.status(400).json({ message: 'Email verification code is required. Please verify your email first.' });
+    }
+
+    const EmailVerification = require('../models/emailVerification.model');
+    const verification = await EmailVerification.findOne({
+      email: email.toLowerCase().trim(),
+      code: verificationCode,
+      type: 'registration',
+      verified: true,
+    });
+
+    if (!verification) {
+      return res.status(400).json({ message: 'Invalid or unverified email code. Please verify your email first.' });
+    }
+
+    // Check if code has expired
+    if (new Date() > verification.expiresAt) {
+      await EmailVerification.findByIdAndDelete(verification._id);
+      return res.status(400).json({ message: 'Verification code has expired. Please request a new one.' });
     }
 
     // Validate password strength
@@ -43,10 +80,17 @@ exports.registerUser = async (req, res) => {
       return res.status(400).json({ message: passwordError });
     }
 
+    // Check if username already exists
     const userExists = await User.findOne({ username });
 
     if (userExists) {
-      return res.status(400).json({ message: 'User already exists' });
+      return res.status(400).json({ message: 'Username already exists' });
+    }
+
+    // Check if email is already associated with another user
+    const emailExists = await User.findOne({ email: email.toLowerCase().trim() });
+    if (emailExists) {
+      return res.status(400).json({ message: 'Email is already associated with another account' });
     }
 
     const user = await User.create({
@@ -54,12 +98,15 @@ exports.registerUser = async (req, res) => {
       password,
       firstName: firstName || '',
       lastName: lastName || '',
-      email: email || '',
+      email: email.toLowerCase().trim(),
       phone: phone || '',
       employeeId: employeeId || '',
       department: department || 'meter',
       role: department === 'admin' ? 'admin' : 'meter_reader',
     });
+
+    // Delete verification record after successful registration
+    await EmailVerification.findByIdAndDelete(verification._id);
 
     if (user) {
       // Update last login

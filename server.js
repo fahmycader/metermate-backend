@@ -15,7 +15,8 @@ const houseRoutes = require('./routes/houses.routes');
 const uploadRoutes = require('./routes/upload.routes');
 const meterReadingRoutes = require('./routes/meterReading.routes');
 const messageRoutes = require('./routes/messages.routes');
-const vehicleCheckRoutes = require('./routes/vehicleCheck.routes'); 
+const vehicleCheckRoutes = require('./routes/vehicleCheck.routes');
+const authRoutes = require('./routes/auth.routes'); 
 
 // Set JWT_SECRET in environment variables for jwt.sign
 process.env.JWT_SECRET = JWT_SECRET;
@@ -37,6 +38,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Routes
 console.log('Registering routes...');
+app.use('/api/auth', authRoutes);      // Email verification and password reset routes
 app.use('/api/auth', userRoutes);      // Auth routes (login, register, profile)
 console.log('Auth routes registered at /api/auth');
 app.use('/api/users', usersRoutes);    // User management routes
