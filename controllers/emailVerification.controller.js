@@ -204,9 +204,25 @@ exports.forgotPassword = async (req, res) => {
     } catch (emailError) {
       await EmailVerification.findByIdAndDelete(verification._id);
       console.error('Email sending failed:', emailError);
+      
+      // Provide user-friendly error message
+      let errorMessage = 'Failed to send verification email. Please check your email configuration.';
+      
+      if (emailError.message.includes('Email service not configured') || 
+          emailError.message.includes('Email configuration is missing')) {
+        errorMessage = 'Email service is not configured. Please contact the administrator.';
+      } else if (emailError.message.includes('Invalid login') || 
+                 emailError.message.includes('authentication failed')) {
+        errorMessage = 'Email authentication failed. Please contact the administrator.';
+      } else if (emailError.message.includes('ECONNREFUSED') || 
+                 emailError.message.includes('ETIMEDOUT')) {
+        errorMessage = 'Cannot connect to email server. Please try again later or contact the administrator.';
+      }
+      
       return res.status(500).json({
-        message: 'Failed to send verification email. Please check your email configuration.',
+        message: errorMessage,
         error: process.env.NODE_ENV === 'development' ? emailError.message : undefined,
+        code: 'EMAIL_SEND_FAILED',
       });
     }
   } catch (error) {
